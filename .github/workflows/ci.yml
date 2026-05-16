@@ -30,10 +30,13 @@ jobs:
       - name: Install dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
+          choco install sqlite --yes
           vcpkg install sqlite3:x64-windows
           echo "CMAKE_PREFIX_PATH=C:/vcpkg/installed/x64-windows" >> $env:GITHUB_ENV
           echo "VCPKG_ROOT=C:/vcpkg" >> $env:GITHUB_ENV
           echo "VCPKGRS_DYNAMIC=1" >> $env:GITHUB_ENV
+          echo "C:\ProgramData\chocolatey\lib\SQLite\tools" >> $env:GITHUB_PATH
+        shell: pwsh
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
