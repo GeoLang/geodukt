@@ -66,24 +66,29 @@ fn shape_to_geometry(shape: &shapefile::Shape) -> geo::Geometry {
             }
         }
         shapefile::Shape::Polygon(pg) => {
-            let rings: Vec<geo::LineString> = pg
-                .rings()
-                .iter()
-                .map(|ring| {
-                    let points: Vec<geo::Coord> = match ring {
-                        shapefile::PolygonRing::Outer(pts) | shapefile::PolygonRing::Inner(pts) => {
-                            pts.iter().map(|p| geo::Coord { x: p.x, y: p.y }).collect()
-                        }
-                    };
-                    geo::LineString::from(points)
-                })
-                .collect();
-            if let Some(exterior) = rings.into_iter().next() {
-                geo::Geometry::Polygon(geo::Polygon::new(exterior, Vec::new()))
+            let mut exterior = None;
+            let mut interiors = Vec::new();
+            for ring in pg.rings() {
+                let coords: Vec<geo::Coord> = match ring {
+                    shapefile::PolygonRing::Outer(pts) | shapefile::PolygonRing::Inner(pts) => {
+                        pts.iter().map(|p| geo::Coord { x: p.x, y: p.y }).collect()
+                    }
+                };
+                let ls = geo::LineString::from(coords);
+                if exterior.is_none() {
+                    exterior = Some(ls);
+                } else {
+                    interiors.push(ls);
+                }
+            }
+            if let Some(ext) = exterior {
+                geo::Geometry::Polygon(geo::Polygon::new(ext, interiors))
             } else {
                 geo::Geometry::Point(geo::Point::new(0.0, 0.0))
             }
         }
+        shapefile::Shape::PointM(p) => geo::Geometry::Point(geo::Point::new(p.x, p.y)),
+        shapefile::Shape::PointZ(p) => geo::Geometry::Point(geo::Point::new(p.x, p.y)),
         _ => geo::Geometry::Point(geo::Point::new(0.0, 0.0)),
     }
 }
