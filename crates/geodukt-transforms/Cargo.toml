@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 geodukt-core = { path = "../geodukt-core" }
-geo = "0.29"
-proj = { version = "0.28", optional = true }
+geo = "0.33"
+proj = { version = "0.31", optional = true }
 toml = "0.8"
 thiserror = "2"
 rayon = "1"

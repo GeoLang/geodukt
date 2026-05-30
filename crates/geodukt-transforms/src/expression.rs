@@ -66,11 +66,13 @@ fn evaluate_expression(
         }
         "$length" => {
             let length = match geometry {
-                Geometry::LineString(ls) => ls.length::<geo::algorithm::line_measures::Euclidean>(),
+                Geometry::LineString(ls) => {
+                    geo::algorithm::line_measures::metric_spaces::Euclidean.length(ls)
+                }
                 Geometry::MultiLineString(mls) => mls
                     .0
                     .iter()
-                    .map(|ls| ls.length::<geo::algorithm::line_measures::Euclidean>())
+                    .map(|ls| geo::algorithm::line_measures::metric_spaces::Euclidean.length(ls))
                     .sum(),
                 _ => 0.0,
             };

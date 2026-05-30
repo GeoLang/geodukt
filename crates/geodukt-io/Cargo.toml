@@ -6,13 +6,13 @@ license.workspace = true
 
 [dependencies]
 geodukt-core = { path = "../geodukt-core" }
-geo = "0.29"
-geojson = "0.24"
+geo = "0.33"
+geojson = "1.0"
 csv = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-flatgeobuf = "4"
+flatgeobuf = "6"
 geoparquet = { package = "parquet", version = "54", optional = true }
 shapefile = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }

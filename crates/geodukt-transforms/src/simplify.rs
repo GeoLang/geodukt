@@ -35,10 +35,10 @@ impl TransformOp for SimplifyTransform {
 
 fn simplify_geometry(geom: &Geometry<f64>, epsilon: f64) -> Geometry<f64> {
     match geom {
-        Geometry::LineString(ls) => Geometry::LineString(ls.simplify(&epsilon)),
-        Geometry::Polygon(p) => Geometry::Polygon(p.simplify(&epsilon)),
-        Geometry::MultiLineString(mls) => Geometry::MultiLineString(mls.simplify(&epsilon)),
-        Geometry::MultiPolygon(mp) => Geometry::MultiPolygon(mp.simplify(&epsilon)),
+        Geometry::LineString(ls) => Geometry::LineString(ls.simplify(epsilon)),
+        Geometry::Polygon(p) => Geometry::Polygon(p.simplify(epsilon)),
+        Geometry::MultiLineString(mls) => Geometry::MultiLineString(mls.simplify(epsilon)),
+        Geometry::MultiPolygon(mp) => Geometry::MultiPolygon(mp.simplify(epsilon)),
         other => other.clone(),
     }
 }
