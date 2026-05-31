@@ -1,5 +1,8 @@
 # Geodukt
 
+[![CI](https://github.com/GeoLang/geodukt/actions/workflows/ci.yml/badge.svg)](https://github.com/GeoLang/geodukt/actions)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+
 A declarative geospatial ETL pipeline — **dbt for spatial data**.
 
 Define transformations as a DAG of models. Geodukt resolves dependencies, validates geometries, and materializes outputs to your target format.
