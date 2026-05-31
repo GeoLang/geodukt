@@ -2,6 +2,8 @@
 //!
 //! REST API for triggering and monitoring geodukt pipelines.
 
+pub mod gp_tools;
+
 use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
@@ -63,6 +65,7 @@ pub fn create_router() -> Router {
         .route("/run", post(trigger_run))
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
+        .nest("/gp", gp_tools::gp_routes().with_state(()))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
