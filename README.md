@@ -13,6 +13,7 @@ Define transformations as a DAG of models. Geodukt resolves dependencies, valida
 - **Validation** — geometry validity checks, CRS verification, schema assertions
 - **Incremental processing** — hash-based change detection, only reprocess what changed
 - **Lineage tracking** — full provenance from source to sink
+- **Geoprocessing REST service** — HTTP API exposing buffer, centroid, clip, dissolve, and simplify as on-demand tools with JSON I/O (`/gp/catalog` for discovery)
 
 ## Quick Start
 
