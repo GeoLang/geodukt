@@ -31,7 +31,7 @@ jobs:
       - name: Add redirect
         run: echo '<meta http-equiv="refresh" content="0;url=geodukt_core/index.html">' > target/doc/index.html
       - uses: actions/configure-pages@v4
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: target/doc
       - id: deployment
