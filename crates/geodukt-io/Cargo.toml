@@ -16,7 +16,7 @@ flatgeobuf = "6"
 geoparquet = { package = "parquet", version = "54", optional = true }
 shapefile = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }
-object_store = { version = "0.11", features = ["aws", "gcp", "azure"] }
+object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
 tokio = { version = "1", features = ["rt"] }
 bytes = "1"
 futures = "0.3"
