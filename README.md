@@ -12,11 +12,11 @@ Define transformations as a DAG of models. Geodukt resolves dependencies, valida
 - **Declarative pipeline definitions** — TOML manifest files describe sources, transforms, and sinks
 - **DAG execution engine** — automatic dependency resolution, parallel where possible
 - **Spatial transforms** — reproject, clip, buffer, simplify, spatial join, centroid, dissolve
-- **Multiple formats** — GeoJSON, CSV (lon/lat), GeoPackage, FlatGeobuf, GeoParquet
+- **Formats** — pipeline sources and sinks read and write GeoJSON. CSV, GeoPackage, and Shapefile readers exist in `geodukt-io` but are not wired into the pipeline yet
 - **Validation** — geometry validity checks, CRS verification, schema assertions
 - **Incremental processing** — hash-based change detection, only reprocess what changed
 - **Lineage tracking** — full provenance from source to sink
-- **Geoprocessing REST service** — HTTP API exposing buffer, centroid, clip, dissolve, and simplify as on-demand tools with JSON I/O (`/gp/catalog` for discovery)
+- **Geoprocessing REST service** — HTTP API exposing buffer, centroid, clip, dissolve, and simplify as on-demand tools with JSON I/O (`/gp/catalog` for discovery), plus `/run` and `/runs` for pipeline execution
 
 ## Quick Start
 
@@ -35,6 +35,15 @@ geodukt validate
 
 # Show the DAG
 geodukt graph
+
+# Start the geoprocessing REST server
+geodukt serve --bind 127.0.0.1:8080
+
+# Generate pipeline docs (markdown or html)
+geodukt docs --format markdown
+
+# Diff pipeline outputs against a git ref
+geodukt diff --from HEAD~1
 ```
 
 ## Pipeline Definition
@@ -71,8 +80,8 @@ clip_to = "zoning"
 [[sink]]
 name = "output"
 input = "clipped_parcels"
-format = "geoparquet"
-path = "output/parcels_clipped.parquet"
+format = "geojson"
+path = "output/parcels_clipped.geojson"
 ```
 
 ## Architecture
@@ -80,7 +89,8 @@ path = "output/parcels_clipped.parquet"
 ```
 geodukt-core    — DAG engine, transform registry, execution scheduler
 geodukt-transforms — spatial operations (reproject, clip, buffer, join, etc.)
-geodukt-io      — source/sink connectors (GeoJSON, CSV, GeoPackage, Parquet)
+geodukt-io      — source/sink connectors (GeoJSON wired up, CSV/GeoPackage/Shapefile available)
+geodukt-server  — REST API for pipeline runs and geoprocessing tools
 geodukt-cli     — command-line interface
 ```
 

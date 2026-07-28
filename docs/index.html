@@ -208,11 +208,11 @@
                 </div>
                 <div class="feature-card">
                     <h3>Multi-Format I/O</h3>
-                    <p>Read GeoJSON, CSV with coordinates. Write GeoJSON. Designed for GeoPackage, GeoParquet, FlatGeobuf extension.</p>
+                    <p>Pipeline sources and sinks read and write GeoJSON. CSV, GeoPackage, and Shapefile readers live in geodukt-io but are not wired into the pipeline yet.</p>
                 </div>
                 <div class="feature-card">
                     <h3>CLI Tool</h3>
-                    <p><code>geodukt run</code>, <code>validate</code>, <code>graph</code>, <code>init</code>. Fast feedback on your pipeline before execution.</p>
+                    <p><code>geodukt run</code>, <code>validate</code>, <code>graph</code>, <code>init</code>, <code>serve</code>, <code>docs</code>, <code>diff</code>. Fast feedback on your pipeline before execution.</p>
                 </div>
                 <div class="feature-card">
                     <h3>Extensible Architecture</h3>
@@ -228,7 +228,7 @@
                 </div>
                 <div class="feature-card">
                     <h3>GeoLang Ecosystem</h3>
-                    <p>Pairs with Geokode for geocoding enrichment, Jung for symbology, and upcoming stream processing + AI extraction.</p>
+                    <p>Part of the GeoLang stack. Cross-service wiring to Geokode and Jung is not implemented yet.</p>
                 </div>
             </div>
         </section>
@@ -282,7 +282,10 @@ geodukt validate
 geodukt run
 
 # Visualize execution order
-geodukt graph</code></pre>
+geodukt graph
+
+# Serve the geoprocessing REST API
+geodukt serve --bind 127.0.0.1:8080</code></pre>
         </section>
 
         <section>
