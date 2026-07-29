@@ -315,8 +315,8 @@ geodukt serve --bind 127.0.0.1:8080</code></pre>
                 <tr><td>GET</td><td><code>/health</code></td><td>Liveness and version</td></tr>
                 <tr><td>GET</td><td><code>/operations</code></td><td>Every operation and format a manifest may name</td></tr>
                 <tr><td>POST</td><td><code>/validate</code></td><td>Parse and check a manifest, return the plan, run nothing</td></tr>
-                <tr><td>POST</td><td><code>/run</code></td><td>Execute a manifest and record the run</td></tr>
-                <tr><td>GET</td><td><code>/runs</code></td><td>Every recorded run</td></tr>
+                <tr><td>POST</td><td><code>/run</code></td><td>Execute a manifest and record the attempt, successful or not</td></tr>
+                <tr><td>GET</td><td><code>/runs</code></td><td>Every recorded run, including failed ones</td></tr>
                 <tr><td>GET</td><td><code>/runs/{id}</code></td><td>One run, including the manifest it ran</td></tr>
                 <tr><td>GET</td><td><code>/gp/catalog</code></td><td>The subset of operations exposed as one-shot tools</td></tr>
                 <tr><td>POST</td><td><code>/gp/{tool}</code></td><td>Run one operation over GeoJSON in the request body</td></tr>
@@ -344,6 +344,14 @@ curl -X POST localhost:8080/validate \
                 schema), <code>graph</code> (422, unknown input, duplicate name, or a cycle),
                 <code>operation</code> (422, an operation that does not exist or cannot run), or
                 <code>format</code> (422, a format that is not wired up).
+            </p>
+            <p>
+                <code>/run</code> records every attempt and answers with a run record either way, so one
+                shape covers both outcomes. A run that completes is 200 with <code>status</code> set to
+                <code>"Completed"</code>. A run that fails is 422 with <code>status</code> set to
+                <code>{"Failed": "&lt;reason&gt;"}</code>, and the record stays in <code>/runs</code> with
+                the manifest that produced it. 422 rather than 500 because the manifest was sound and it
+                was the work it described that could not be carried out, so retrying it will not help.
             </p>
         </section>
 

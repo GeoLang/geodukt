@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GET /operations`: catalog of every transform operation and source/sink format
   a manifest may name, generated from the tables the engine dispatches on
 - Run records keep the manifest TOML, so `GET /runs/{id}` is enough to repeat a run
+- Failed runs are recorded like completed ones, so `/runs` and `/runs/{id}` show
+  them. `POST /run` answers a failure with 422 and the run record, whose `status`
+  is `{"Failed": "<reason>"}`. The success response is unchanged
 
 - Declarative pipeline manifest (geodukt.toml) with TOML parsing
 - DAG execution engine with topological sorting (petgraph)
@@ -41,3 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generated from the registry table instead of a hand-written copy
 - The README pipeline example set `clip_to` on a clip transform, which nothing
   reads. It now uses the bounding box parameters clip actually takes
+- Five geodukt-transforms tests failed under `--no-default-features`. The buffer
+  ones assert metric distances, which only hold with the `reproject` feature, so
+  they are gated on it and the featureless build has its own CRS-units test. The
+  registry one hardcoded reproject's presence and now tracks the feature

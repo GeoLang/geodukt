@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,28 @@ use geodukt_transforms::registry::{OperationSpec, default_registry, operations};
 #[derive(Clone)]
 struct AppState {
     runs: Arc<Mutex<Vec<RunRecord>>>,
+}
+
+impl AppState {
+    /// Append a run attempt, completed or failed, and hand back the stored record.
+    fn record(
+        &self,
+        status: RunStatus,
+        manifest_name: String,
+        manifest: String,
+        steps: Vec<StepRecord>,
+    ) -> RunRecord {
+        let mut runs = self.runs.lock().unwrap();
+        let record = RunRecord {
+            id: runs.len(),
+            status,
+            manifest_name,
+            manifest,
+            steps,
+        };
+        runs.push(record.clone());
+        record
+    }
 }
 
 /// Record of a pipeline run.
@@ -102,50 +125,72 @@ async fn validate_manifest(
         .map_err(|problem| (problem.status(), Json(problem)))
 }
 
+/// Why a run request did not produce a completed run.
+enum RunError {
+    /// The body is not a manifest that can be turned into a pipeline, so there
+    /// is nothing to record.
+    BadRequest(String),
+    /// The pipeline ran and failed. The attempt is recorded, and the record
+    /// comes back so the caller has the id and the reason.
+    Failed(Box<RunRecord>),
+}
+
+impl IntoResponse for RunError {
+    fn into_response(self) -> Response {
+        match self {
+            RunError::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+            // the manifest was well formed and the work it described could not be
+            // carried out, which is the request's content rather than a server
+            // fault, so 422 rather than 500. a 500 would tell a client to retry
+            // something that cannot succeed.
+            RunError::Failed(record) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, Json(record)).into_response()
+            }
+        }
+    }
+}
+
 async fn trigger_run(
     State(state): State<AppState>,
     Json(req): Json<RunRequest>,
-) -> Result<Json<RunRecord>, (StatusCode, String)> {
+) -> Result<Json<RunRecord>, RunError> {
     let manifest = Manifest::from_toml(&req.manifest)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid manifest: {e}")))?;
+        .map_err(|e| RunError::BadRequest(format!("Invalid manifest: {e}")))?;
 
     let pipeline = Pipeline::new(manifest.clone())
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Pipeline error: {e}")))?;
+        .map_err(|e| RunError::BadRequest(format!("Pipeline error: {e}")))?;
 
     let transforms = default_registry();
     let reader = MultiFormatReader;
     let writer = MultiFormatWriter;
+    let name = manifest.project.name;
 
-    let report = pipeline
-        .execute(&reader, &transforms, &writer)
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Execution error: {e}"),
-            )
-        })?;
-
-    let steps: Vec<StepRecord> = report
-        .steps
-        .iter()
-        .map(|s| StepRecord {
-            name: s.name.clone(),
-            feature_count: s.feature_count,
-        })
-        .collect();
-
-    let mut runs = state.runs.lock().unwrap();
-    let id = runs.len();
-    let record = RunRecord {
-        id,
-        status: RunStatus::Completed,
-        manifest_name: manifest.project.name,
-        manifest: req.manifest,
-        steps,
-    };
-    runs.push(record.clone());
-
-    Ok(Json(record))
+    match pipeline.execute(&reader, &transforms, &writer) {
+        Ok(report) => {
+            let steps = report
+                .steps
+                .iter()
+                .map(|s| StepRecord {
+                    name: s.name.clone(),
+                    feature_count: s.feature_count,
+                })
+                .collect();
+            Ok(Json(state.record(
+                RunStatus::Completed,
+                name,
+                req.manifest,
+                steps,
+            )))
+        }
+        // execute drops its progress on error, so a failed run records no steps.
+        // the message names the step that failed.
+        Err(e) => Err(RunError::Failed(Box::new(state.record(
+            RunStatus::Failed(format!("Execution error: {e}")),
+            name,
+            req.manifest,
+            Vec::new(),
+        )))),
+    }
 }
 
 async fn list_runs(State(state): State<AppState>) -> Json<Vec<RunRecord>> {

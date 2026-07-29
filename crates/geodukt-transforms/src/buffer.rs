@@ -7,6 +7,10 @@
 //! local azimuthal-equidistant plane centered on the collection, buffered there,
 //! then projected back. The aeqd plane keeps distances from its center true, so
 //! the buffer width is metric even for lon/lat input.
+//!
+//! That projection step needs proj, so it only happens with the `reproject`
+//! feature on (the default). Built without it, `distance` is CRS units instead,
+//! which for lon/lat input means degrees.
 
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -170,9 +174,7 @@ fn transform_err(message: String) -> PipelineError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo::{
-        Area, Contains, Geodesic, GeodesicArea, Length, Polygon, line_string, point, polygon,
-    };
+    use geo::{Area, point};
     use geodukt_core::feature::Value;
 
     fn fc(geometry: Geometry<f64>) -> FeatureCollection {
@@ -196,86 +198,114 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_buffer_point_area() {
-        let r = 100.0;
-        let result = BufferTransform
-            .apply(&fc(Geometry::Point(point!(x: 8.55, y: 47.37))), &params(r))
-            .unwrap();
+    /// The metric contract only holds with the reproject feature. Without proj
+    /// there is no local plane to buffer in, so `distance` is CRS units and a
+    /// geodesic area check is meaningless.
+    #[cfg(feature = "reproject")]
+    mod metric {
+        use super::*;
+        use geo::{Contains, Geodesic, GeodesicArea, Length, Polygon, line_string, polygon};
 
-        let area = multipolygon(&result.features[0].geometry).geodesic_area_unsigned();
-        let expected = PI * r * r;
-        assert!(
-            (area - expected).abs() / expected < 0.02,
-            "point buffer area {area} not within 2% of {expected}"
-        );
+        #[test]
+        fn test_buffer_point_area() {
+            let r = 100.0;
+            let result = BufferTransform
+                .apply(&fc(Geometry::Point(point!(x: 8.55, y: 47.37))), &params(r))
+                .unwrap();
+
+            let area = multipolygon(&result.features[0].geometry).geodesic_area_unsigned();
+            let expected = PI * r * r;
+            assert!(
+                (area - expected).abs() / expected < 0.02,
+                "point buffer area {area} not within 2% of {expected}"
+            );
+        }
+
+        #[test]
+        fn test_buffer_line_area() {
+            let r = 100.0;
+            let line = line_string![(x: 8.50, y: 47.37), (x: 8.52, y: 47.37)];
+            let length = Geodesic.length(&line);
+            let result = BufferTransform
+                .apply(&fc(Geometry::LineString(line)), &params(r))
+                .unwrap();
+
+            let area = multipolygon(&result.features[0].geometry).geodesic_area_unsigned();
+            let expected = 2.0 * r * length + PI * r * r;
+            assert!(
+                (area - expected).abs() / expected < 0.05,
+                "line buffer area {area} not within 5% of {expected} (length {length})"
+            );
+        }
+
+        #[test]
+        fn test_buffer_polygon_grows_and_contains() {
+            let r = 100.0;
+            let original: Polygon<f64> = polygon![
+                (x: 8.50, y: 47.36),
+                (x: 8.52, y: 47.36),
+                (x: 8.52, y: 47.38),
+                (x: 8.50, y: 47.38),
+            ];
+            let orig_area = original.geodesic_area_unsigned();
+            let perimeter = original.geodesic_perimeter();
+
+            let result = BufferTransform
+                .apply(&fc(Geometry::Polygon(original.clone())), &params(r))
+                .unwrap();
+            let buffered = multipolygon(&result.features[0].geometry);
+
+            assert!(
+                buffered.contains(&original),
+                "buffered polygon must contain the original"
+            );
+
+            let area = buffered.geodesic_area_unsigned();
+            let expected = orig_area + perimeter * r + PI * r * r;
+            assert!(
+                (area - expected).abs() / expected < 0.05,
+                "polygon buffer area {area} not within 5% of {expected}"
+            );
+        }
+
+        #[test]
+        fn test_buffer_negative_shrinks_polygon() {
+            let original: Polygon<f64> = polygon![
+                (x: 8.50, y: 47.36),
+                (x: 8.55, y: 47.36),
+                (x: 8.55, y: 47.40),
+                (x: 8.50, y: 47.40),
+            ];
+            let orig_area = original.geodesic_area_unsigned();
+
+            let result = BufferTransform
+                .apply(&fc(Geometry::Polygon(original)), &params(-100.0))
+                .unwrap();
+            let area = multipolygon(&result.features[0].geometry).geodesic_area_unsigned();
+
+            assert!(
+                area > 0.0 && area < orig_area,
+                "negative buffer should shrink area: got {area}, original {orig_area}"
+            );
+        }
     }
 
+    /// Without the reproject feature `distance` is CRS units, so buffering a
+    /// lon/lat point by 1.0 gives roughly a unit circle in square degrees.
+    #[cfg(not(feature = "reproject"))]
     #[test]
-    fn test_buffer_line_area() {
-        let r = 100.0;
-        let line = line_string![(x: 8.50, y: 47.37), (x: 8.52, y: 47.37)];
-        let length = Geodesic.length(&line);
+    fn test_buffer_without_reproject_uses_crs_units() {
         let result = BufferTransform
-            .apply(&fc(Geometry::LineString(line)), &params(r))
+            .apply(
+                &fc(Geometry::Point(point!(x: 8.55, y: 47.37))),
+                &params(1.0),
+            )
             .unwrap();
 
-        let area = multipolygon(&result.features[0].geometry).geodesic_area_unsigned();
-        let expected = 2.0 * r * length + PI * r * r;
+        let area = multipolygon(&result.features[0].geometry).unsigned_area();
         assert!(
-            (area - expected).abs() / expected < 0.05,
-            "line buffer area {area} not within 5% of {expected} (length {length})"
-        );
-    }
-
-    #[test]
-    fn test_buffer_polygon_grows_and_contains() {
-        let r = 100.0;
-        let original: Polygon<f64> = polygon![
-            (x: 8.50, y: 47.36),
-            (x: 8.52, y: 47.36),
-            (x: 8.52, y: 47.38),
-            (x: 8.50, y: 47.38),
-        ];
-        let orig_area = original.geodesic_area_unsigned();
-        let perimeter = original.geodesic_perimeter();
-
-        let result = BufferTransform
-            .apply(&fc(Geometry::Polygon(original.clone())), &params(r))
-            .unwrap();
-        let buffered = multipolygon(&result.features[0].geometry);
-
-        assert!(
-            buffered.contains(&original),
-            "buffered polygon must contain the original"
-        );
-
-        let area = buffered.geodesic_area_unsigned();
-        let expected = orig_area + perimeter * r + PI * r * r;
-        assert!(
-            (area - expected).abs() / expected < 0.05,
-            "polygon buffer area {area} not within 5% of {expected}"
-        );
-    }
-
-    #[test]
-    fn test_buffer_negative_shrinks_polygon() {
-        let original: Polygon<f64> = polygon![
-            (x: 8.50, y: 47.36),
-            (x: 8.55, y: 47.36),
-            (x: 8.55, y: 47.40),
-            (x: 8.50, y: 47.40),
-        ];
-        let orig_area = original.geodesic_area_unsigned();
-
-        let result = BufferTransform
-            .apply(&fc(Geometry::Polygon(original)), &params(-100.0))
-            .unwrap();
-        let area = multipolygon(&result.features[0].geometry).geodesic_area_unsigned();
-
-        assert!(
-            area > 0.0 && area < orig_area,
-            "negative buffer should shrink area: got {area}, original {orig_area}"
+            (area - PI).abs() / PI < 0.01,
+            "expected a unit circle in square degrees, got {area}"
         );
     }
 

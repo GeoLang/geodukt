@@ -201,6 +201,38 @@ which part to fix:
 | `operation` | 422 | a transform names an operation that does not exist or cannot run |
 | `format` | 422 | a source or sink names a format that is not wired up |
 
+### POST /run
+
+Same body as `/validate`. Executes the manifest and records the attempt, whether
+it succeeds or not, so every run is retrievable from `/runs`.
+
+Both outcomes return a run record, so a caller parses one shape either way. The
+`status` field tells them apart:
+
+```json
+{"id": 0, "status": "Completed", "manifest_name": "city", "manifest": "<TOML>",
+ "steps": [{"name": "parcels", "feature_count": 120}]}
+
+{"id": 1, "status": {"Failed": "Execution error: sink error for 'out': csv carries point geometry as lon/lat columns, cannot write a Polygon, ..."},
+ "manifest_name": "doomed", "manifest": "<TOML>", "steps": []}
+```
+
+| outcome | status | body |
+|---------|--------|------|
+| ran to completion | 200 | run record, `status` is `"Completed"` |
+| ran and failed | 422 | run record, `status` is `{"Failed": "<reason>"}` |
+| not a usable manifest | 400 | plain text, nothing recorded |
+
+A failed run is 422 rather than 500 because the manifest parsed and its graph was
+sound, so what failed is the work the request described: a missing input, an
+unwritable output path, or geometry the chosen format cannot carry. A 500 would
+tell a client the server misbehaved and the request is worth retrying, when it is
+not. A 400 is reserved for a body that never became a pipeline, and that case
+records nothing because no run was attempted.
+
+A failed record carries no steps, because the executor discards its progress when
+a step fails. The reason names the step that failed.
+
 ## Architecture
 
 ```

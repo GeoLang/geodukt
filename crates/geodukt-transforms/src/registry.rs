@@ -309,17 +309,27 @@ mod tests {
     #[test]
     fn test_default_registry() {
         let reg = default_registry();
-        assert!(reg.contains_key("buffer"));
-        assert!(reg.contains_key("centroid"));
-        assert!(reg.contains_key("clip"));
-        assert!(reg.contains_key("dissolve"));
-        assert!(reg.contains_key("expression"));
-        assert!(reg.contains_key("filter"));
-        assert!(reg.contains_key("reproject"));
-        assert!(reg.contains_key("schema_map"));
-        assert!(reg.contains_key("simplify"));
-        assert!(reg.contains_key("spatial_join"));
-        assert_eq!(reg.len(), 10);
+        for name in [
+            "buffer",
+            "centroid",
+            "clip",
+            "dissolve",
+            "expression",
+            "filter",
+            "schema_map",
+            "simplify",
+            "spatial_join",
+        ] {
+            assert!(reg.contains_key(name), "'{name}' is not registered");
+        }
+        assert_eq!(reg.len(), operations().len());
+    }
+
+    /// reproject needs proj, so it is only registered with the feature on.
+    #[test]
+    fn test_reproject_tracks_its_feature() {
+        let registered = default_registry().contains_key("reproject");
+        assert_eq!(registered, cfg!(feature = "reproject"));
     }
 
     #[test]

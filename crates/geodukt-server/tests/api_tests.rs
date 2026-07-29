@@ -378,3 +378,209 @@ path = "{output}"
     let (status, _) = post("/validate", serde_json::json!({"manifest": manifest})).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// A manifest that parses and builds a valid DAG but cannot run: the CSV sink
+/// only carries point geometry, and the source hands it a polygon.
+fn failing_manifest(dir: &std::path::Path) -> String {
+    let input = dir.join("polys.geojson");
+    std::fs::write(
+        &input,
+        r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"id":1},
+             "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+
+    format!(
+        r#"
+[project]
+name = "doomed"
+
+[[source]]
+name = "polys"
+format = "geojson"
+path = "{input}"
+
+[[sink]]
+name = "out"
+input = "polys"
+format = "csv"
+path = "{output}"
+"#,
+        input = input.display(),
+        output = dir.join("out.csv").display()
+    )
+}
+
+#[tokio::test]
+async fn test_failed_run_returns_422_with_the_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = failing_manifest(dir.path());
+
+    let (status, record) = post("/run", serde_json::json!({"manifest": manifest})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // the failure body is a run record, so a caller parses one shape either way
+    assert_eq!(record["id"], 0);
+    assert_eq!(record["manifest_name"], "doomed");
+    assert_eq!(record["steps"], serde_json::json!([]));
+
+    let reason = record["status"]["Failed"].as_str().unwrap();
+    assert!(reason.contains("cannot write a Polygon"), "{reason}");
+    // the message names the step that failed
+    assert!(reason.contains("out"), "{reason}");
+}
+
+#[tokio::test]
+async fn test_failed_run_is_listed_and_replayable() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = failing_manifest(dir.path());
+    let app = create_router();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/run")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"manifest": manifest}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // GET /runs/{id} shows the failed run
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/runs/0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(stored["status"]["Failed"].is_string(), "{stored}");
+    assert_eq!(stored["manifest"], manifest);
+
+    // and GET /runs lists it
+    let resp = app
+        .oneshot(Request::builder().uri("/runs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let runs: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["id"], 0);
+
+    // the stored manifest still parses, so the failure can be reproduced
+    let (status, _) = post("/validate", serde_json::json!({"manifest": manifest})).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_completed_status_shape_is_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.geojson");
+    std::fs::write(
+        &input,
+        r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{},
+             "geometry":{"type":"Point","coordinates":[1,2]}}]}"#,
+    )
+    .unwrap();
+
+    let manifest = format!(
+        r#"
+[project]
+name = "fine"
+
+[[source]]
+name = "pts"
+format = "geojson"
+path = "{input}"
+
+[[sink]]
+name = "out"
+input = "pts"
+format = "geojson"
+path = "{output}"
+"#,
+        input = input.display(),
+        output = dir.path().join("out.geojson").display()
+    );
+
+    let (status, record) = post("/run", serde_json::json!({"manifest": manifest})).await;
+    assert_eq!(status, StatusCode::OK);
+    // a completed run still serializes status as the bare string "Completed"
+    assert_eq!(record["status"], "Completed");
+    assert_eq!(record["steps"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_run_ids_keep_counting_across_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let failing = failing_manifest(dir.path());
+    let app = create_router();
+
+    for expected_id in 0..2 {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/run")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"manifest": failing}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(record["id"], expected_id);
+    }
+}
+
+#[tokio::test]
+async fn test_unparseable_manifest_records_no_run() {
+    let app = create_router();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/run")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"manifest": "[project\nbroken"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // nothing was attempted, so there is nothing to record
+    let resp = app
+        .oneshot(Request::builder().uri("/runs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&bytes[..], b"[]");
+}
