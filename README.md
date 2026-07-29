@@ -12,7 +12,7 @@ Define transformations as a DAG of models. Geodukt resolves dependencies, valida
 - **Declarative pipeline definitions** — TOML manifest files describe sources, transforms, and sinks
 - **DAG execution engine** — automatic dependency resolution, parallel where possible
 - **Spatial transforms** — reproject, clip, buffer, simplify, spatial join, centroid, dissolve
-- **Formats** — pipeline sources and sinks read and write GeoJSON, GeoPackage, and Shapefile. A CSV reader exists in `geodukt-io` but is not wired into the pipeline yet
+- **Formats** — pipeline sources and sinks read and write GeoJSON, GeoPackage, Shapefile, and CSV
 - **Validation** — geometry validity checks, CRS verification, schema assertions
 - **Incremental processing** — hash-based change detection, only reprocess what changed
 - **Lineage tracking** — full provenance from source to sink
@@ -90,6 +90,7 @@ path = "output/parcels_clipped.geojson"
 
 | format | aliases | reads | writes |
 |--------|---------|-------|--------|
+| `csv` | | yes | yes |
 | `geojson` | | yes | yes |
 | `geopackage` | `gpkg` | yes | yes |
 | `shapefile` | `shp` | yes | yes |
@@ -123,13 +124,14 @@ What each format carries:
 
 - **GeoPackage** round-trips geometry, attribute types (integer, float, text, null), and the CRS as an EPSG code.
 - **Shapefile** writes the .shp, .shx and .dbf sidecars, plus a .prj when the CRS is a known EPSG code. The format holds one geometry type per file, limits attribute names to 10 bytes and field widths to 254 bytes, and stores numbers as fixed point text with 8 decimal places. A collection that breaks any of those rules fails the run instead of being written mangled.
+- **CSV** carries point geometry only, as a `lon,lat` pair followed by one column per property. Writing anything but a point fails the run. Reads accept `lon`/`longitude`/`x` and `lat`/`latitude`/`y`, and assume EPSG:4326. Because CSV stores no types, a read infers one per cell: headers come back lowercased, a string that looks like a number comes back as a number, `true`/`false` come back as strings, and an empty cell comes back as an empty string rather than null.
 
 ## Architecture
 
 ```
 geodukt-core    — DAG engine, transform registry, execution scheduler
 geodukt-transforms — spatial operations (reproject, clip, buffer, join, etc.)
-geodukt-io      — source/sink connectors (GeoJSON, GeoPackage, Shapefile wired up, CSV reader available)
+geodukt-io      — source/sink connectors (GeoJSON, GeoPackage, Shapefile, CSV)
 geodukt-server  — REST API for pipeline runs and geoprocessing tools
 geodukt-cli     — command-line interface
 ```

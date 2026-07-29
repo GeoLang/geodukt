@@ -267,3 +267,133 @@ path = "{output}"
     assert!(err.to_string().contains("one geometry type"), "{err}");
     assert!(!Path::new(&dir.path().join("mixed.dbf")).exists());
 }
+
+#[test]
+fn test_geojson_through_centroid_to_csv_and_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("zones.geojson");
+    let csv = dir.path().join("out").join("centers.csv");
+    let geojson_again = dir.path().join("out").join("centers.geojson");
+
+    std::fs::write(
+        &input,
+        r#"{
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates":
+                        [[[0.0,0.0],[3.0,0.0],[3.0,3.0],[0.0,3.0],[0.0,0.0]]]},
+                    "properties": {"name": "alpha", "pop": 100, "share": 0.25}
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates":
+                        [[[8.0,8.0],[9.0,8.0],[9.0,9.0],[8.0,9.0],[8.0,8.0]]]},
+                    "properties": {"name": "beta", "pop": 250, "share": 0.75}
+                }
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let counts = run(&format!(
+        r#"
+[project]
+name = "geojson-to-csv"
+
+[[source]]
+name = "zones"
+format = "geojson"
+path = "{input}"
+
+[[transform]]
+name = "centers"
+input = "zones"
+operation = "centroid"
+
+[[sink]]
+name = "out"
+input = "centers"
+format = "csv"
+path = "{csv}"
+"#,
+        input = input.display(),
+        csv = csv.display()
+    ));
+    assert_eq!(counts, vec![2, 2, 2]);
+
+    let written = std::fs::read_to_string(&csv).unwrap();
+    assert_eq!(written.lines().next(), Some("lon,lat,name,pop,share"));
+    assert_eq!(written.lines().nth(1), Some("1.5,1.5,alpha,100,0.25"));
+
+    // the csv reads back as a source, so the sink output is a usable input
+    let counts = run(&format!(
+        r#"
+[project]
+name = "csv-back-to-geojson"
+
+[[source]]
+name = "centers"
+format = "csv"
+path = "{csv}"
+
+[[sink]]
+name = "out"
+input = "centers"
+format = "geojson"
+path = "{geojson}"
+"#,
+        csv = csv.display(),
+        geojson = geojson_again.display()
+    ));
+    assert_eq!(counts, vec![2, 2]);
+
+    let round_tripped = std::fs::read_to_string(&geojson_again).unwrap();
+    assert!(round_tripped.contains("[1.5,1.5]"), "{round_tripped}");
+    assert!(round_tripped.contains("alpha"), "{round_tripped}");
+    assert!(round_tripped.contains("0.25"), "{round_tripped}");
+}
+
+#[test]
+fn test_csv_sink_rejects_non_point_geometry() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("zones.gpkg");
+
+    write_geopackage(
+        &input,
+        &FeatureCollection::new(vec![parcel(0.0, "north", 1, 4.0)], None),
+        "zones",
+    )
+    .unwrap();
+
+    let manifest = Manifest::from_toml(&format!(
+        r#"
+[project]
+name = "polygons-to-csv"
+
+[[source]]
+name = "zones"
+format = "gpkg"
+path = "{input}"
+layer = "zones"
+
+[[sink]]
+name = "out"
+input = "zones"
+format = "csv"
+path = "{output}"
+"#,
+        input = input.display(),
+        output = dir.path().join("out.csv").display()
+    ))
+    .unwrap();
+
+    let err = Pipeline::new(manifest)
+        .unwrap()
+        .execute(&MultiFormatReader, &default_registry(), &MultiFormatWriter)
+        .unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("cannot write a Polygon"), "{message}");
+    assert!(!Path::new(&dir.path().join("out.csv")).exists());
+}

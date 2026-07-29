@@ -8,12 +8,13 @@ use geodukt_core::feature::FeatureCollection;
 use geodukt_core::manifest::{DEFAULT_LAYER, Sink, Source};
 use geodukt_core::pipeline::{PipelineError, SinkWriter, SourceReader};
 
+use crate::csv_io::{CsvReader, CsvWriter};
 use crate::geojson_io::{GeoJsonReader, GeoJsonWriter};
 use crate::geopackage_io::{read_geopackage, write_geopackage};
 use crate::shapefile_io::{read_shapefile, write_shapefile};
 
 /// Formats a manifest source or sink may name, with the aliases accepted for each.
-const SUPPORTED_FORMATS: &str = "geojson, geopackage (gpkg), shapefile (shp)";
+const SUPPORTED_FORMATS: &str = "csv, geojson, geopackage (gpkg), shapefile (shp)";
 
 /// Multi-format reader that delegates to format-specific readers.
 pub struct MultiFormatReader;
@@ -22,6 +23,7 @@ impl SourceReader for MultiFormatReader {
     fn read_source(&self, source: &Source) -> Result<FeatureCollection, PipelineError> {
         let path = Path::new(&source.path);
         match source.format.as_str() {
+            "csv" => CsvReader.read_source(source),
             "geojson" => GeoJsonReader.read_source(source),
             "geopackage" | "gpkg" => read_geopackage(path, source.layer.as_deref()),
             "shapefile" | "shp" => read_shapefile(path),
@@ -42,6 +44,7 @@ impl SinkWriter for MultiFormatWriter {
     fn write_sink(&self, data: &FeatureCollection, sink: &Sink) -> Result<(), PipelineError> {
         let path = Path::new(&sink.path);
         match sink.format.as_str() {
+            "csv" => CsvWriter.write_sink(data, sink),
             "geojson" => GeoJsonWriter.write_sink(data, sink),
             "geopackage" | "gpkg" => {
                 write_geopackage(path, data, sink.layer.as_deref().unwrap_or(DEFAULT_LAYER))

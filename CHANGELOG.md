@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binary, typed attribute columns, and CRS round trips
 - Shapefile source and sink, writing the .shp/.shx/.dbf sidecars and a .prj,
   and rejecting collections a shapefile cannot represent
-- CSV source reader (lon/lat column detection)
+- CSV source and sink, carrying point geometry as lon/lat columns and rejecting
+  geometry the format cannot hold
 - CLI tool: `run`, `validate`, `graph`, `init` subcommands
 - GitHub Actions CI (Ubuntu, Windows, macOS)
 - AGPL-3.0-or-later license
