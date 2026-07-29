@@ -203,26 +203,18 @@ async fn centroid_tool(Json(req): Json<GpRequest>) -> Result<Json<GpResponse>, G
 async fn clip_tool(Json(req): Json<GpRequest>) -> Result<Json<GpResponse>, GpError> {
     let input = parse_input(&req.input)?;
 
-    let min_x = req
-        .params
-        .get("min_x")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(-180.0);
-    let min_y = req
-        .params
-        .get("min_y")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(-90.0);
-    let max_x = req
-        .params
-        .get("max_x")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(180.0);
-    let max_y = req
-        .params
-        .get("max_y")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(90.0);
+    // no whole-world default: a clip missing an edge used to return the input
+    // untouched, which reads as a working clip that did nothing
+    let edge = |name: &str| {
+        req.params.get(name).and_then(|v| v.as_f64()).ok_or((
+            StatusCode::BAD_REQUEST,
+            format!("Missing '{name}' parameter"),
+        ))
+    };
+    let min_x = edge("min_x")?;
+    let min_y = edge("min_y")?;
+    let max_x = edge("max_x")?;
+    let max_y = edge("max_y")?;
 
     let params = HashMap::from([
         ("min_x".to_string(), toml::Value::Float(min_x)),
@@ -563,5 +555,35 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_clip_rejects_a_missing_edge() {
+        // a clip that silently kept the whole world read as a clip that worked
+        let input = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                "properties": {}
+            }]
+        });
+        let body = serde_json::json!({
+            "input": input,
+            "params": {"min_x": -1.0, "min_y": -1.0, "max_x": 1.0}
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/clip")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+
+        let resp = test_router().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("max_y"));
     }
 }
