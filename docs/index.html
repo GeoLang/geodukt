@@ -115,6 +115,22 @@
 
         code { font-family: 'JetBrains Mono', 'Fira Code', monospace; }
 
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+            font-size: 0.95rem;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 0.6rem 0.8rem;
+            border-bottom: 1px solid #334155;
+        }
+
+        th { color: var(--primary-light); }
+        td { color: var(--text-muted); }
+
         .cta {
             text-align: center;
             margin: 4rem 0;
@@ -284,8 +300,51 @@ geodukt run
 # Visualize execution order
 geodukt graph
 
-# Serve the geoprocessing REST API
+# Serve the REST API
 geodukt serve --bind 127.0.0.1:8080</code></pre>
+        </section>
+
+        <section>
+            <h2>REST API</h2>
+            <p>
+                <code>geodukt serve</code> exposes the pipeline over HTTP, for a UI or an agent that
+                composes manifests and wants to check them before running.
+            </p>
+            <table>
+                <tr><th>Method</th><th>Path</th><th>Purpose</th></tr>
+                <tr><td>GET</td><td><code>/health</code></td><td>Liveness and version</td></tr>
+                <tr><td>GET</td><td><code>/operations</code></td><td>Every operation and format a manifest may name</td></tr>
+                <tr><td>POST</td><td><code>/validate</code></td><td>Parse and check a manifest, return the plan, run nothing</td></tr>
+                <tr><td>POST</td><td><code>/run</code></td><td>Execute a manifest and record the run</td></tr>
+                <tr><td>GET</td><td><code>/runs</code></td><td>Every recorded run</td></tr>
+                <tr><td>GET</td><td><code>/runs/{id}</code></td><td>One run, including the manifest it ran</td></tr>
+                <tr><td>GET</td><td><code>/gp/catalog</code></td><td>The subset of operations exposed as one-shot tools</td></tr>
+                <tr><td>POST</td><td><code>/gp/{tool}</code></td><td>Run one operation over GeoJSON in the request body</td></tr>
+            </table>
+            <p>
+                <code>/operations</code> and <code>/gp/catalog</code> are generated from the tables the
+                engine dispatches on, so the advertised parameter names are the ones the transforms read.
+            </p>
+<pre><code># Check a manifest without running it
+curl -X POST localhost:8080/validate \
+  -H 'content-type: application/json' \
+  -d '{"manifest": "[project]\nname = \"city\"\n..."}'
+
+# Steps come back in execution order
+{"project": "city", "version": "1.0.0", "steps": [
+  {"name": "parcels", "kind": "source", "format": "gpkg", "path": "data/city.gpkg", "layer": "parcels"},
+  {"name": "centers", "kind": "transform", "operation": "centroid", "input": "parcels", "params": {}},
+  {"name": "out", "kind": "sink", "input": "centers", "format": "shp", "path": "out/centers.shp"}
+]}
+
+# A rejected manifest says which part to fix
+{"kind": "graph", "message": "DAG error: unknown input reference: ghost"}</code></pre>
+            <p>
+                The <code>kind</code> field is <code>toml</code> (400, not valid TOML or not the manifest
+                schema), <code>graph</code> (422, unknown input, duplicate name, or a cycle),
+                <code>operation</code> (422, an operation that does not exist or cannot run), or
+                <code>format</code> (422, a format that is not wired up).
+            </p>
         </section>
 
         <section>

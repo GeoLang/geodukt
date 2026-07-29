@@ -16,24 +16,12 @@ use geodukt_transforms::buffer::BufferTransform;
 use geodukt_transforms::centroid::CentroidTransform;
 use geodukt_transforms::clip::ClipTransform;
 use geodukt_transforms::dissolve::DissolveTransform;
+use geodukt_transforms::registry::{OperationSpec, operation};
 use geodukt_transforms::simplify::SimplifyTransform;
 
-/// Catalog entry for a geoprocessing tool.
-#[derive(Debug, Clone, Serialize)]
-pub struct ToolInfo {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub parameters: &'static [ParamDef],
-}
-
-/// Parameter definition for tool catalog.
-#[derive(Debug, Clone, Serialize)]
-pub struct ParamDef {
-    pub name: &'static str,
-    pub param_type: &'static str,
-    pub required: bool,
-    pub description: &'static str,
-}
+/// The operations exposed as GP endpoints, a subset of the pipeline's operations.
+/// Kept in the same order as the routes below.
+const GP_TOOLS: &[&str] = &["buffer", "centroid", "clip", "dissolve", "simplify"];
 
 /// GeoJSON-like input for GP tools.
 #[derive(Debug, Deserialize)]
@@ -67,75 +55,17 @@ pub fn gp_routes() -> Router {
         .route("/simplify", post(simplify_tool))
 }
 
-/// List all available GP tools.
-async fn catalog() -> Json<Vec<ToolInfo>> {
-    Json(vec![
-        ToolInfo {
-            name: "buffer",
-            description: "Buffer geometries by a distance",
-            parameters: &[ParamDef {
-                name: "distance",
-                param_type: "f64",
-                required: true,
-                description: "Buffer distance in CRS units",
-            }],
-        },
-        ToolInfo {
-            name: "centroid",
-            description: "Compute centroids of input geometries",
-            parameters: &[],
-        },
-        ToolInfo {
-            name: "clip",
-            description: "Clip input features to a bounding box",
-            parameters: &[
-                ParamDef {
-                    name: "min_x",
-                    param_type: "f64",
-                    required: false,
-                    description: "Minimum X coordinate (default -180)",
-                },
-                ParamDef {
-                    name: "min_y",
-                    param_type: "f64",
-                    required: false,
-                    description: "Minimum Y coordinate (default -90)",
-                },
-                ParamDef {
-                    name: "max_x",
-                    param_type: "f64",
-                    required: false,
-                    description: "Maximum X coordinate (default 180)",
-                },
-                ParamDef {
-                    name: "max_y",
-                    param_type: "f64",
-                    required: false,
-                    description: "Maximum Y coordinate (default 90)",
-                },
-            ],
-        },
-        ToolInfo {
-            name: "dissolve",
-            description: "Dissolve features by a grouping attribute",
-            parameters: &[ParamDef {
-                name: "field",
-                param_type: "string",
-                required: true,
-                description: "Attribute field to dissolve by",
-            }],
-        },
-        ToolInfo {
-            name: "simplify",
-            description: "Simplify geometries using Douglas-Peucker algorithm",
-            parameters: &[ParamDef {
-                name: "tolerance",
-                param_type: "f64",
-                required: true,
-                description: "Simplification tolerance in CRS units",
-            }],
-        },
-    ])
+/// List all available GP tools, described by the same table the pipeline
+/// dispatches on so the parameter names here are the ones the transforms read.
+async fn catalog() -> Json<Vec<OperationSpec>> {
+    Json(
+        GP_TOOLS
+            .iter()
+            .map(|name| {
+                operation(name).expect("every GP tool is an operation in the registry table")
+            })
+            .collect(),
+    )
 }
 
 /// Parse a GeoJSON FeatureCollection into internal representation.
@@ -314,13 +244,15 @@ async fn clip_tool(Json(req): Json<GpRequest>) -> Result<Json<GpResponse>, GpErr
 
 async fn dissolve_tool(Json(req): Json<GpRequest>) -> Result<Json<GpResponse>, GpError> {
     let input = parse_input(&req.input)?;
-    let field = req
-        .params
-        .get("field")
-        .and_then(|v| v.as_str())
-        .ok_or((StatusCode::BAD_REQUEST, "Missing 'field' parameter".into()))?;
+    let group_by = req.params.get("group_by").and_then(|v| v.as_str()).ok_or((
+        StatusCode::BAD_REQUEST,
+        "Missing 'group_by' parameter".into(),
+    ))?;
 
-    let params = HashMap::from([("field".to_string(), toml::Value::String(field.to_string()))]);
+    let params = HashMap::from([(
+        "group_by".to_string(),
+        toml::Value::String(group_by.to_string()),
+    )]);
     let result = DissolveTransform
         .apply(&input, &params)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -334,16 +266,12 @@ async fn dissolve_tool(Json(req): Json<GpRequest>) -> Result<Json<GpResponse>, G
 
 async fn simplify_tool(Json(req): Json<GpRequest>) -> Result<Json<GpResponse>, GpError> {
     let input = parse_input(&req.input)?;
-    let tolerance = req
-        .params
-        .get("tolerance")
-        .and_then(|v| v.as_f64())
-        .ok_or((
-            StatusCode::BAD_REQUEST,
-            "Missing 'tolerance' parameter".into(),
-        ))?;
+    let epsilon = req.params.get("epsilon").and_then(|v| v.as_f64()).ok_or((
+        StatusCode::BAD_REQUEST,
+        "Missing 'epsilon' parameter".into(),
+    ))?;
 
-    let params = HashMap::from([("tolerance".to_string(), toml::Value::Float(tolerance))]);
+    let params = HashMap::from([("epsilon".to_string(), toml::Value::Float(epsilon))]);
     let result = SimplifyTransform
         .apply(&input, &params)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -470,7 +398,7 @@ mod tests {
             }]
         });
 
-        let body = serde_json::json!({"input": input, "params": {"tolerance": 0.2}});
+        let body = serde_json::json!({"input": input, "params": {"epsilon": 0.2}});
 
         let req = Request::builder()
             .method("POST")
@@ -487,7 +415,14 @@ mod tests {
             .unwrap();
         let gp_resp: GpResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(gp_resp.tool, "simplify");
-        assert!(gp_resp.feature_count >= 1);
+        assert_eq!(gp_resp.feature_count, 1);
+
+        // epsilon has to reach the transform, so the zigzag loses its middle points
+        let coords = gp_resp.output["features"][0]["geometry"]["coordinates"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert!(coords < 5, "expected simplification, got {coords} points");
     }
 
     #[tokio::test]
@@ -536,11 +471,19 @@ mod tests {
                         "coordinates": [[[1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 0.0]]]
                     },
                     "properties": {"group": "a"}
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[5.0, 5.0], [6.0, 5.0], [6.0, 6.0], [5.0, 6.0], [5.0, 5.0]]]
+                    },
+                    "properties": {"group": "b"}
                 }
             ]
         });
 
-        let body = serde_json::json!({"input": input, "params": {"field": "group"}});
+        let body = serde_json::json!({"input": input, "params": {"group_by": "group"}});
 
         let req = Request::builder()
             .method("POST")
@@ -557,7 +500,68 @@ mod tests {
             .unwrap();
         let gp_resp: GpResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(gp_resp.tool, "dissolve");
-        // Two features with same group should dissolve to one
-        assert_eq!(gp_resp.feature_count, 1);
+        // group_by has to reach the transform: the two group 'a' polygons union
+        // and group 'b' stays on its own. ignoring the parameter would give 1.
+        assert_eq!(gp_resp.feature_count, 2);
+    }
+
+    /// The catalog describes the parameters the transforms actually read, because
+    /// both come from the registry table. This used to drift: the catalog
+    /// advertised 'field' and 'tolerance' while the transforms read 'group_by'
+    /// and 'epsilon', so those parameters were silently ignored.
+    #[tokio::test]
+    async fn test_catalog_parameters_match_the_registry_table() {
+        let app = test_router();
+        let req = Request::builder()
+            .uri("/catalog")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let tools: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(tools.len(), GP_TOOLS.len());
+        for (tool, name) in tools.iter().zip(GP_TOOLS) {
+            assert_eq!(tool["name"], *name);
+            let expected: Vec<&str> = operation(name)
+                .unwrap()
+                .parameters
+                .iter()
+                .map(|p| p.name)
+                .collect();
+            let listed: Vec<&str> = tool["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(listed, expected, "{name} parameters");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dissolve_without_group_by_returns_400() {
+        let app = test_router();
+        let input = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                "properties": {}
+            }]
+        });
+        let body = serde_json::json!({"input": input, "params": {"field": "group"}});
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/dissolve")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

@@ -11,6 +11,7 @@ proj = { version = "0.31", optional = true }
 toml = "0.8"
 thiserror = "2"
 rayon = "1"
+serde = { version = "1", features = ["derive"] }
 
 [features]
 default = ["reproject"]

@@ -54,10 +54,14 @@ impl Pipeline {
         Ok(Self { dag, manifest })
     }
 
+    /// The nodes in execution order, for inspecting a plan without running it.
+    pub fn plan(&self) -> Result<Vec<&Node>, PipelineError> {
+        Ok(self.dag.topological_order()?)
+    }
+
     /// Validate the pipeline DAG without executing.
     pub fn validate(&self) -> Result<Vec<String>, PipelineError> {
-        let order = self.dag.topological_order()?;
-        Ok(order.iter().map(|n| n.name().to_string()).collect())
+        Ok(self.plan()?.iter().map(|n| n.name().to_string()).collect())
     }
 
     /// Execute the pipeline with the given source/transform/sink implementations.

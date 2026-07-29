@@ -3,6 +3,7 @@
 //! REST API for triggering and monitoring geodukt pipelines.
 
 pub mod gp_tools;
+pub mod validate;
 
 use std::sync::{Arc, Mutex};
 
@@ -15,8 +16,8 @@ use tower_http::cors::CorsLayer;
 
 use geodukt_core::manifest::Manifest;
 use geodukt_core::pipeline::Pipeline;
-use geodukt_io::formats::{MultiFormatReader, MultiFormatWriter};
-use geodukt_transforms::registry::default_registry;
+use geodukt_io::formats::{FormatSpec, MultiFormatReader, MultiFormatWriter, formats};
+use geodukt_transforms::registry::{OperationSpec, default_registry, operations};
 
 /// Shared server state.
 #[derive(Clone)]
@@ -30,6 +31,8 @@ pub struct RunRecord {
     pub id: usize,
     pub status: RunStatus,
     pub manifest_name: String,
+    /// The manifest TOML exactly as submitted, so the run can be repeated.
+    pub manifest: String,
     pub steps: Vec<StepRecord>,
 }
 
@@ -62,6 +65,8 @@ pub fn create_router() -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/operations", get(list_operations))
+        .route("/validate", post(validate_manifest))
         .route("/run", post(trigger_run))
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
@@ -72,6 +77,29 @@ pub fn create_router() -> Router {
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")}))
+}
+
+/// What a manifest may name: every transform operation and every source or sink
+/// format. Both lists come from the tables the engine dispatches on.
+#[derive(Debug, Clone, Serialize)]
+pub struct Catalog {
+    pub operations: Vec<OperationSpec>,
+    pub formats: &'static [FormatSpec],
+}
+
+async fn list_operations() -> Json<Catalog> {
+    Json(Catalog {
+        operations: operations(),
+        formats: formats(),
+    })
+}
+
+async fn validate_manifest(
+    Json(req): Json<RunRequest>,
+) -> Result<Json<validate::Plan>, (StatusCode, Json<validate::Problem>)> {
+    validate::validate_manifest(&req.manifest)
+        .map(Json)
+        .map_err(|problem| (problem.status(), Json(problem)))
 }
 
 async fn trigger_run(
@@ -112,6 +140,7 @@ async fn trigger_run(
         id,
         status: RunStatus::Completed,
         manifest_name: manifest.project.name,
+        manifest: req.manifest,
         steps,
     };
     runs.push(record.clone());

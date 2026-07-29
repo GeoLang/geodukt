@@ -55,3 +55,326 @@ async fn test_run_invalid_manifest() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+/// Post a JSON body and return the status plus the decoded response.
+async fn post(uri: &str, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    request(
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+}
+
+async fn get(uri: &str) -> (StatusCode, serde_json::Value) {
+    request(Request::builder().uri(uri).body(Body::empty()).unwrap()).await
+}
+
+async fn request(req: Request<Body>) -> (StatusCode, serde_json::Value) {
+    let resp = create_router().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+const PLAN: &str = r#"
+[project]
+name = "city"
+version = "1.2.0"
+
+[[source]]
+name = "parcels"
+format = "gpkg"
+path = "data/city.gpkg"
+layer = "parcels"
+
+[[transform]]
+name = "centers"
+input = "parcels"
+operation = "centroid"
+
+[[sink]]
+name = "out"
+input = "centers"
+format = "csv"
+path = "out/centers.csv"
+"#;
+
+#[tokio::test]
+async fn test_validate_returns_the_step_order_and_details() {
+    let (status, plan) = post("/validate", serde_json::json!({"manifest": PLAN})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(plan["project"], "city");
+    assert_eq!(plan["version"], "1.2.0");
+
+    let steps = plan["steps"].as_array().unwrap();
+    let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["parcels", "centers", "out"]);
+
+    assert_eq!(steps[0]["kind"], "source");
+    assert_eq!(steps[0]["format"], "gpkg");
+    assert_eq!(steps[0]["path"], "data/city.gpkg");
+    assert_eq!(steps[0]["layer"], "parcels");
+    // fields that do not apply to a source are absent, not null
+    assert!(steps[0].get("operation").is_none());
+
+    assert_eq!(steps[1]["kind"], "transform");
+    assert_eq!(steps[1]["operation"], "centroid");
+    assert_eq!(steps[1]["input"], "parcels");
+
+    assert_eq!(steps[2]["kind"], "sink");
+    assert_eq!(steps[2]["input"], "centers");
+    assert_eq!(steps[2]["format"], "csv");
+}
+
+#[tokio::test]
+async fn test_validate_does_not_execute() {
+    // the manifest names paths that do not exist, so a run would fail
+    let (status, _) = post("/validate", serde_json::json!({"manifest": PLAN})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!std::path::Path::new("out/centers.csv").exists());
+
+    let (runs_status, runs) = get("/runs").await;
+    assert_eq!(runs_status, StatusCode::OK);
+    assert_eq!(runs, serde_json::json!([]), "validating must record no run");
+}
+
+#[tokio::test]
+async fn test_validate_toml_error_is_400_with_kind_toml() {
+    let (status, problem) = post(
+        "/validate",
+        serde_json::json!({"manifest": "[project\nbroken"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(problem["kind"], "toml");
+    assert!(problem["message"].as_str().unwrap().len() > 5);
+}
+
+#[tokio::test]
+async fn test_validate_graph_error_is_422_with_kind_graph() {
+    let manifest = r#"
+[project]
+name = "broken"
+
+[[transform]]
+name = "orphan"
+input = "missing"
+operation = "centroid"
+"#;
+    let (status, problem) = post("/validate", serde_json::json!({"manifest": manifest})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(problem["kind"], "graph");
+    assert!(
+        problem["message"].as_str().unwrap().contains("missing"),
+        "{problem}"
+    );
+}
+
+#[tokio::test]
+async fn test_validate_unknown_operation_is_422_with_kind_operation() {
+    let manifest = r#"
+[project]
+name = "broken"
+
+[[source]]
+name = "src"
+format = "geojson"
+path = "a.geojson"
+
+[[transform]]
+name = "oops"
+input = "src"
+operation = "buffer_it_up"
+"#;
+    let (status, problem) = post("/validate", serde_json::json!({"manifest": manifest})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(problem["kind"], "operation");
+    assert!(
+        problem["message"]
+            .as_str()
+            .unwrap()
+            .contains("buffer_it_up"),
+        "{problem}"
+    );
+}
+
+#[tokio::test]
+async fn test_validate_unknown_format_is_422_with_kind_format() {
+    let manifest = r#"
+[project]
+name = "broken"
+
+[[source]]
+name = "raster"
+format = "geotiff"
+path = "a.tif"
+"#;
+    let (status, problem) = post("/validate", serde_json::json!({"manifest": manifest})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(problem["kind"], "format");
+}
+
+#[tokio::test]
+async fn test_operations_catalog_matches_the_registry_table() {
+    let (status, catalog) = get("/operations").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let listed: Vec<&str> = catalog["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|op| op["name"].as_str().unwrap())
+        .collect();
+    let expected: Vec<&str> = geodukt_transforms::registry::operations()
+        .iter()
+        .map(|op| op.name)
+        .collect();
+    assert_eq!(listed, expected);
+    assert!(listed.len() > 5, "more than the 5 gp tools: {listed:?}");
+    assert!(listed.contains(&"schema_map"));
+    assert!(listed.contains(&"expression"));
+}
+
+#[tokio::test]
+async fn test_operations_catalog_carries_parameter_specs() {
+    let (_, catalog) = get("/operations").await;
+    let ops = catalog["operations"].as_array().unwrap();
+
+    let buffer = ops.iter().find(|op| op["name"] == "buffer").unwrap();
+    assert!(!buffer["description"].as_str().unwrap().is_empty());
+    let distance = buffer["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "distance")
+        .unwrap();
+    assert_eq!(distance["param_type"], "float");
+    assert_eq!(distance["required"], false);
+    assert_eq!(distance["default"], "1.0");
+
+    // the real parameter names, not the ones /gp/catalog used to advertise
+    let simplify = ops.iter().find(|op| op["name"] == "simplify").unwrap();
+    assert_eq!(simplify["parameters"][0]["name"], "epsilon");
+    let dissolve = ops.iter().find(|op| op["name"] == "dissolve").unwrap();
+    assert_eq!(dissolve["parameters"][0]["name"], "group_by");
+}
+
+#[tokio::test]
+async fn test_operations_catalog_flags_what_cannot_run() {
+    let (_, catalog) = get("/operations").await;
+    let ops = catalog["operations"].as_array().unwrap();
+
+    let join = ops.iter().find(|op| op["name"] == "spatial_join").unwrap();
+    assert!(join["unavailable"].is_string(), "{join}");
+
+    let centroid = ops.iter().find(|op| op["name"] == "centroid").unwrap();
+    assert!(centroid.get("unavailable").is_none(), "{centroid}");
+}
+
+#[tokio::test]
+async fn test_operations_catalog_lists_formats_and_their_fields() {
+    let (_, catalog) = get("/operations").await;
+    let formats = catalog["formats"].as_array().unwrap();
+
+    let names: Vec<&str> = formats
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["csv", "geojson", "geopackage", "shapefile"]);
+
+    let gpkg = formats.iter().find(|f| f["name"] == "geopackage").unwrap();
+    assert_eq!(gpkg["aliases"], serde_json::json!(["gpkg"]));
+    assert_eq!(gpkg["reads"], true);
+    assert_eq!(gpkg["writes"], true);
+    assert_eq!(gpkg["fields"], serde_json::json!(["path", "layer"]));
+
+    let geojson = formats.iter().find(|f| f["name"] == "geojson").unwrap();
+    assert_eq!(geojson["fields"], serde_json::json!(["path"]));
+}
+
+#[tokio::test]
+async fn test_run_record_carries_the_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("in.geojson");
+    std::fs::write(
+        &input,
+        r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"name":"a"},
+             "geometry":{"type":"Point","coordinates":[1.0,2.0]}}]}"#,
+    )
+    .unwrap();
+
+    let manifest = format!(
+        r#"
+[project]
+name = "reproducible"
+
+[[source]]
+name = "pts"
+format = "geojson"
+path = "{input}"
+
+[[sink]]
+name = "out"
+input = "pts"
+format = "geojson"
+path = "{output}"
+"#,
+        input = input.display(),
+        output = dir.path().join("out.geojson").display()
+    );
+
+    // one router so the run and the lookup share state
+    let app = create_router();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/run")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"manifest": manifest}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(record["manifest_name"], "reproducible");
+    assert_eq!(record["manifest"], manifest);
+
+    // and the stored record still has it, so a past run can be repeated
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/runs/0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(stored["id"], 0);
+    assert_eq!(stored["manifest"], manifest);
+
+    // the stored text is a manifest the validator accepts, so it is replayable
+    let (status, _) = post("/validate", serde_json::json!({"manifest": manifest})).await;
+    assert_eq!(status, StatusCode::OK);
+}

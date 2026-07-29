@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `POST /validate`: check a manifest without running it, returning the step
+  order and per-step details, or a problem tagged `toml`, `graph`, `operation`,
+  or `format`
+- `GET /operations`: catalog of every transform operation and source/sink format
+  a manifest may name, generated from the tables the engine dispatches on
+- Run records keep the manifest TOML, so `GET /runs/{id}` is enough to repeat a run
+
 - Declarative pipeline manifest (geodukt.toml) with TOML parsing
 - DAG execution engine with topological sorting (petgraph)
 - Pipeline executor with pluggable source/transform/sink traits
@@ -26,3 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI tool: `run`, `validate`, `graph`, `init` subcommands
 - GitHub Actions CI (Ubuntu, Windows, macOS)
 - AGPL-3.0-or-later license
+
+### Fixed
+- `/gp/dissolve` and `/gp/simplify` passed `field` and `tolerance` while the
+  transforms read `group_by` and `epsilon`, so both parameters were ignored. The
+  endpoints now take the names the transforms read, and `/gp/catalog` is
+  generated from the registry table instead of a hand-written copy
+- The README pipeline example set `clip_to` on a clip transform, which nothing
+  reads. It now uses the bounding box parameters clip actually takes
