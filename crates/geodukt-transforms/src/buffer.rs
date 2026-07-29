@@ -8,16 +8,21 @@
 //! then projected back. The aeqd plane keeps distances from its center true, so
 //! the buffer width is metric even for lon/lat input.
 //!
-//! That projection step needs proj, so it only happens with the `reproject`
-//! feature on (the default). Built without it, `distance` is CRS units instead,
-//! which for lon/lat input means degrees.
+//! That projection step needs proj, so it needs the `reproject` feature (the
+//! default). Built without it, buffer refuses to run rather than silently
+//! reinterpreting a metric distance as CRS units.
 
 use std::collections::HashMap;
+#[cfg(feature = "reproject")]
 use std::f64::consts::PI;
 
+#[cfg(feature = "reproject")]
 use geo::algorithm::buffer::{BufferStyle, LineCap, LineJoin};
+#[cfg(feature = "reproject")]
 use geo::{Buffer, Geometry, MultiPolygon};
-use geodukt_core::feature::{Feature, FeatureCollection};
+#[cfg(feature = "reproject")]
+use geodukt_core::feature::Feature;
+use geodukt_core::feature::FeatureCollection;
 use geodukt_core::pipeline::{PipelineError, TransformOp};
 
 #[cfg(feature = "reproject")]
@@ -81,28 +86,25 @@ fn buffer_collection(
     Ok(FeatureCollection::new(features, input.crs.clone()))
 }
 
-/// Fallback used when the `reproject` feature (and PROJ) is unavailable:
-/// buffer directly in the input coordinate plane, distance in coordinate units.
+/// Without the `reproject` feature there is no way to honor the metric
+/// contract, and silently buffering lon/lat input in degrees turns a 100 m
+/// request into a circle thousands of kilometres wide, so fail loud instead.
 #[cfg(not(feature = "reproject"))]
 fn buffer_collection(
-    input: &FeatureCollection,
-    distance: f64,
-    segments: usize,
+    _input: &FeatureCollection,
+    _distance: f64,
+    _segments: usize,
 ) -> Result<FeatureCollection, PipelineError> {
-    let features = input
-        .features
-        .iter()
-        .map(|f| Feature {
-            geometry: Geometry::MultiPolygon(buffer_local(&f.geometry, distance, segments)),
-            properties: f.properties.clone(),
-        })
-        .collect();
-
-    Ok(FeatureCollection::new(features, input.crs.clone()))
+    Err(PipelineError::Transform {
+        name: "buffer".to_string(),
+        message: "a metric buffer needs the reproject feature, rebuild with default features"
+            .to_string(),
+    })
 }
 
 /// Planar buffer with round joins and caps approximated by `segments`-gon arcs.
 /// Negative distance shrinks polygons; for points and lines it yields an empty result.
+#[cfg(feature = "reproject")]
 fn buffer_local(geom: &Geometry<f64>, distance: f64, segments: usize) -> MultiPolygon<f64> {
     let angle = 2.0 * PI / segments as f64;
     let style = BufferStyle::new(distance)
@@ -174,8 +176,10 @@ fn transform_err(message: String) -> PipelineError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo::{Area, point};
-    use geodukt_core::feature::Value;
+    #[cfg(feature = "reproject")]
+    use geo::Area;
+    use geo::{Geometry, point};
+    use geodukt_core::feature::{Feature, Value};
 
     fn fc(geometry: Geometry<f64>) -> FeatureCollection {
         FeatureCollection::new(
@@ -191,6 +195,7 @@ mod tests {
         HashMap::from([("distance".into(), toml::Value::Float(distance))])
     }
 
+    #[cfg(feature = "reproject")]
     fn multipolygon(geom: &Geometry<f64>) -> &MultiPolygon<f64> {
         match geom {
             Geometry::MultiPolygon(mp) => mp,
@@ -290,25 +295,25 @@ mod tests {
         }
     }
 
-    /// Without the reproject feature `distance` is CRS units, so buffering a
-    /// lon/lat point by 1.0 gives roughly a unit circle in square degrees.
+    /// Without the reproject feature the metric contract cannot be honored,
+    /// so buffer refuses instead of silently working in degrees.
     #[cfg(not(feature = "reproject"))]
     #[test]
-    fn test_buffer_without_reproject_uses_crs_units() {
-        let result = BufferTransform
+    fn test_buffer_without_reproject_fails_loud() {
+        let err = BufferTransform
             .apply(
                 &fc(Geometry::Point(point!(x: 8.55, y: 47.37))),
                 &params(1.0),
             )
-            .unwrap();
+            .unwrap_err();
 
-        let area = multipolygon(&result.features[0].geometry).unsigned_area();
         assert!(
-            (area - PI).abs() / PI < 0.01,
-            "expected a unit circle in square degrees, got {area}"
+            err.to_string().contains("reproject feature"),
+            "expected the reproject-feature error, got {err}"
         );
     }
 
+    #[cfg(feature = "reproject")]
     #[test]
     fn test_buffer_roundtrips_through_registry() {
         use crate::registry::default_registry;
@@ -329,6 +334,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "reproject")]
     #[test]
     fn test_buffer_point_is_multipolygon() {
         let result = BufferTransform
