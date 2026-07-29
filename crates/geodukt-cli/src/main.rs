@@ -8,7 +8,7 @@ use geodukt_core::manifest::Manifest;
 use geodukt_core::pipeline::Pipeline;
 use geodukt_io::docgen;
 use geodukt_io::formats::{MultiFormatReader, MultiFormatWriter};
-use geodukt_transforms::registry::default_registry;
+use geodukt_transforms::registry::{check_parameters, default_registry};
 
 #[derive(Parser)]
 #[command(name = "geodukt", about = "Declarative geospatial ETL pipeline")]
@@ -93,8 +93,18 @@ fn load_manifest(path: &PathBuf) -> Manifest {
     })
 }
 
+/// Stop before a run when a transform leaves out a parameter its operation
+/// cannot run without.
+fn check_operation_parameters(manifest: &Manifest) {
+    if let Err(message) = check_parameters(manifest) {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
+}
+
 fn cmd_run(path: &PathBuf) {
     let manifest = load_manifest(path);
+    check_operation_parameters(&manifest);
     let pipeline = Pipeline::new(manifest).unwrap_or_else(|e| {
         eprintln!("Pipeline error: {e}");
         std::process::exit(1);
@@ -122,6 +132,7 @@ fn cmd_run(path: &PathBuf) {
 
 fn cmd_validate(path: &PathBuf) {
     let manifest = load_manifest(path);
+    check_operation_parameters(&manifest);
     let pipeline = Pipeline::new(manifest).unwrap_or_else(|e| {
         eprintln!("Validation failed: {e}");
         std::process::exit(1);

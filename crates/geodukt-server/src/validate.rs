@@ -12,7 +12,7 @@ use geodukt_core::dag::Node;
 use geodukt_core::manifest::Manifest;
 use geodukt_core::pipeline::Pipeline;
 use geodukt_io::formats::format;
-use geodukt_transforms::registry::operation;
+use geodukt_transforms::registry::{check_parameters, operation};
 
 /// Which part of a manifest a caller has to fix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,7 +142,14 @@ fn check_operations(manifest: &Manifest) -> Result<(), Problem> {
             ));
         }
     }
-    Ok(())
+    check_missing_parameters(manifest)
+}
+
+/// Reject a transform that leaves out a parameter its operation cannot run
+/// without. Public because `/run` has to reject before it executes anything,
+/// with the message `/validate` gives.
+pub fn check_missing_parameters(manifest: &Manifest) -> Result<(), Problem> {
+    check_parameters(manifest).map_err(|message| Problem::new(ProblemKind::Operation, message))
 }
 
 fn check_formats(manifest: &Manifest) -> Result<(), Problem> {
@@ -453,6 +460,132 @@ operation = "spatial_join"
             "{}",
             problem.message
         );
+    }
+
+    /// A manifest with one transform over one source, so a test only has to say
+    /// what the transform is.
+    fn manifest_with(transform: &str) -> String {
+        format!(
+            r#"
+[project]
+name = "p"
+
+[[source]]
+name = "src"
+format = "geojson"
+path = "a.geojson"
+
+[[transform]]
+name = "step"
+input = "src"
+{transform}
+"#
+        )
+    }
+
+    /// The parameters an operation cannot run without, and a manifest body that
+    /// supplies them.
+    const REQUIRED: &[(&str, &str, &str)] = &[
+        ("buffer", "distance", "distance = 500.0"),
+        ("simplify", "epsilon", "epsilon = 0.01"),
+        ("filter", "field", "field = \"type\"\nequals = \"road\""),
+        ("filter", "equals", "field = \"type\"\nequals = \"road\""),
+        (
+            "expression",
+            "expressions",
+            "expressions = { acres = \"$area / 4047\" }",
+        ),
+        (
+            "clip",
+            "min_x",
+            "min_x = 0.0\nmin_y = 0.0\nmax_x = 1.0\nmax_y = 1.0",
+        ),
+    ];
+
+    #[test]
+    fn test_a_missing_required_parameter_is_rejected() {
+        for (op, param, _) in REQUIRED {
+            let problem =
+                validate_manifest(&manifest_with(&format!("operation = \"{op}\""))).unwrap_err();
+            assert_eq!(problem.kind, ProblemKind::Operation, "{op}");
+            assert_eq!(problem.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            // the message names the transform, the operation and the parameter
+            for part in ["step", op, param] {
+                assert!(problem.message.contains(part), "{}", problem.message);
+            }
+        }
+    }
+
+    #[test]
+    fn test_the_same_manifest_passes_once_the_parameter_is_there() {
+        for (op, _, params) in REQUIRED {
+            let manifest = manifest_with(&format!("operation = \"{op}\"\n{params}"));
+            assert!(
+                validate_manifest(&manifest).is_ok(),
+                "{op}: {:?}",
+                validate_manifest(&manifest).unwrap_err().message
+            );
+        }
+    }
+
+    /// The rejection tells the caller what the parameter is for, because a model
+    /// reads it and retries.
+    #[test]
+    fn test_the_rejection_says_what_the_parameter_is_for() {
+        let problem = validate_manifest(&manifest_with("operation = \"buffer\"")).unwrap_err();
+        assert_eq!(
+            problem.message,
+            "transform 'step' uses operation 'buffer' which cannot run: \
+             missing required parameter 'distance' (Buffer distance in meters, \
+             negative to shrink a polygon)"
+        );
+    }
+
+    #[test]
+    fn test_clip_takes_the_whole_box_or_none_of_it() {
+        let whole = manifest_with(
+            "operation = \"clip\"\nmin_x = 0.0\nmin_y = 0.0\nmax_x = 1.0\nmax_y = 1.0",
+        );
+        assert!(validate_manifest(&whole).is_ok());
+
+        let partial = manifest_with("operation = \"clip\"\nmin_x = 0.0\nmin_y = 0.0\nmax_x = 1.0");
+        let problem = validate_manifest(&partial).unwrap_err();
+        assert!(problem.message.contains("max_y"), "{}", problem.message);
+        // and it does not complain about the edges that are there
+        assert!(!problem.message.contains("min_x"), "{}", problem.message);
+    }
+
+    #[test]
+    fn test_schema_map_that_changes_nothing_is_rejected() {
+        let problem = validate_manifest(&manifest_with("operation = \"schema_map\"")).unwrap_err();
+        assert_eq!(problem.kind, ProblemKind::Operation);
+        for part in ["schema_map", "rename", "drop", "add"] {
+            assert!(problem.message.contains(part), "{}", problem.message);
+        }
+
+        // any one of the three is enough
+        for params in [
+            "rename = { old = \"new\" }",
+            "drop = [\"old\"]",
+            "add = { source = \"census\" }",
+        ] {
+            let manifest = manifest_with(&format!("operation = \"schema_map\"\n{params}"));
+            assert!(validate_manifest(&manifest).is_ok(), "{params}");
+        }
+    }
+
+    /// Optional by decision: reproject can autodetect the source CRS, and a
+    /// dissolve with no group unions everything.
+    #[test]
+    fn test_optional_parameters_stay_optional() {
+        assert!(validate_manifest(&manifest_with("operation = \"dissolve\"")).is_ok());
+        if operation("reproject").is_some() {
+            let manifest = manifest_with("operation = \"reproject\"\nto_crs = \"EPSG:3857\"");
+            assert!(validate_manifest(&manifest).is_ok());
+            let problem =
+                validate_manifest(&manifest_with("operation = \"reproject\"")).unwrap_err();
+            assert!(problem.message.contains("to_crs"), "{}", problem.message);
+        }
     }
 
     #[test]

@@ -32,27 +32,15 @@ impl TransformOp for ClipTransform {
         input: &FeatureCollection,
         params: &HashMap<String, toml::Value>,
     ) -> Result<FeatureCollection, PipelineError> {
-        // If no pre-loaded boundary, try to get bbox from params
+        // a manifest has no way to name a boundary geometry, so without a
+        // pre-loaded one the bounding box is the boundary, all four edges of it
         let clip = if let Some(ref boundary) = self.clip_boundary {
             boundary.clone()
         } else {
-            // Fallback: use bbox params
-            let min_x = params
-                .get("min_x")
-                .and_then(|v: &toml::Value| v.as_float())
-                .unwrap_or(-180.0);
-            let min_y = params
-                .get("min_y")
-                .and_then(|v: &toml::Value| v.as_float())
-                .unwrap_or(-90.0);
-            let max_x = params
-                .get("max_x")
-                .and_then(|v: &toml::Value| v.as_float())
-                .unwrap_or(180.0);
-            let max_y = params
-                .get("max_y")
-                .and_then(|v: &toml::Value| v.as_float())
-                .unwrap_or(90.0);
+            let min_x = crate::params::float(params, "clip", "min_x")?;
+            let min_y = crate::params::float(params, "clip", "min_y")?;
+            let max_x = crate::params::float(params, "clip", "max_x")?;
+            let max_y = crate::params::float(params, "clip", "max_y")?;
 
             let poly = Polygon::new(
                 geo::LineString::from(vec![

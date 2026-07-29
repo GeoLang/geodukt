@@ -14,6 +14,8 @@ impl TransformOp for SchemaMapTransform {
         input: &FeatureCollection,
         params: &HashMap<String, toml::Value>,
     ) -> Result<FeatureCollection, PipelineError> {
+        crate::params::require_any(params, "schema_map")?;
+
         // Parse rename map: {"old_name": "new_name", ...}
         let renames: HashMap<String, String> = params
             .get("rename")
@@ -125,5 +127,20 @@ mod tests {
         assert!(!props.contains_key("old_name"));
         assert!(!props.contains_key("remove_me"));
         assert_eq!(props.get("source"), Some(&Value::String("test".into())));
+    }
+
+    /// A schema_map with no rename, drop or add leaves the columns alone, which
+    /// is never what the caller meant.
+    #[test]
+    fn test_schema_map_that_changes_nothing_fails_loud() {
+        let fc = FeatureCollection::new(
+            vec![Feature {
+                geometry: Geometry::Point(point!(x: 0.0, y: 0.0)),
+                properties: HashMap::new(),
+            }],
+            None,
+        );
+        let err = SchemaMapTransform.apply(&fc, &HashMap::new()).unwrap_err();
+        assert!(err.to_string().contains("at least one of"), "{err}");
     }
 }

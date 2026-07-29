@@ -160,6 +160,9 @@ enum RunError {
     /// The body is not a manifest that can be turned into a pipeline, so there
     /// is nothing to record.
     BadRequest(String),
+    /// The manifest describes work the engine cannot carry out, caught before
+    /// anything ran, so there is no attempt to record. Same body as `/validate`.
+    Rejected(validate::Problem),
     /// The pipeline ran and failed. The attempt is recorded, and the record
     /// comes back so the caller has the id and the reason.
     Failed(Box<RunRecord>),
@@ -169,6 +172,7 @@ impl IntoResponse for RunError {
     fn into_response(self) -> Response {
         match self {
             RunError::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+            RunError::Rejected(problem) => (problem.status(), Json(problem)).into_response(),
             // the manifest was well formed and the work it described could not be
             // carried out, which is the request's content rather than a server
             // fault, so 422 rather than 500. a 500 would tell a client to retry
@@ -190,6 +194,8 @@ async fn trigger_run(
 
     let pipeline = Pipeline::new(manifest.clone())
         .map_err(|e| RunError::BadRequest(format!("Pipeline error: {e}")))?;
+
+    validate::check_missing_parameters(&manifest).map_err(RunError::Rejected)?;
 
     let transforms = default_registry();
     let reader = MultiFormatReader;

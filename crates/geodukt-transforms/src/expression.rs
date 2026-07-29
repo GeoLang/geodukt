@@ -16,15 +16,11 @@ impl TransformOp for ExpressionTransform {
         params: &HashMap<String, toml::Value>,
     ) -> Result<FeatureCollection, PipelineError> {
         // Parse expressions: {"output_col": "expression", ...}
-        let expressions: HashMap<String, String> = params
-            .get("expressions")
-            .and_then(|v| v.as_table())
-            .map(|t| {
-                t.iter()
-                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let expressions: HashMap<String, String> =
+            crate::params::table(params, "expression", "expressions")?
+                .iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect();
 
         let features: Vec<Feature> = input
             .features

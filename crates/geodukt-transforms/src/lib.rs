@@ -8,6 +8,7 @@ pub mod clip;
 pub mod dissolve;
 pub mod expression;
 pub mod filter;
+pub mod params;
 pub mod registry;
 #[cfg(feature = "reproject")]
 pub mod reproject;

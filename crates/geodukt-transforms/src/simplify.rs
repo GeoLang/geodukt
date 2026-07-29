@@ -15,10 +15,7 @@ impl TransformOp for SimplifyTransform {
         input: &FeatureCollection,
         params: &HashMap<String, toml::Value>,
     ) -> Result<FeatureCollection, PipelineError> {
-        let epsilon = params
-            .get("epsilon")
-            .and_then(|v: &toml::Value| v.as_float())
-            .unwrap_or(0.001);
+        let epsilon = crate::params::float(params, "simplify", "epsilon")?;
 
         let features: Vec<Feature> = input
             .features

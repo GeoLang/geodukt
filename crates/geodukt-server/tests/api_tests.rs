@@ -256,14 +256,98 @@ async fn test_operations_catalog_carries_parameter_specs() {
         .find(|p| p["name"] == "distance")
         .unwrap();
     assert_eq!(distance["param_type"], "float");
-    assert_eq!(distance["required"], false);
-    assert_eq!(distance["default"], "1.0");
+    // a buffer with no distance is not a buffer, so there is nothing to default to
+    assert_eq!(distance["required"], true);
+    assert!(distance.get("default").is_none(), "{distance}");
+
+    // segments is a quality knob, so it keeps its default
+    let segments = buffer["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "segments")
+        .unwrap();
+    assert_eq!(segments["required"], false);
+    assert_eq!(segments["default"], "64");
 
     // the real parameter names, not the ones /gp/catalog used to advertise
     let simplify = ops.iter().find(|op| op["name"] == "simplify").unwrap();
     assert_eq!(simplify["parameters"][0]["name"], "epsilon");
     let dissolve = ops.iter().find(|op| op["name"] == "dissolve").unwrap();
     assert_eq!(dissolve["parameters"][0]["name"], "group_by");
+}
+
+/// The catalogue is what the model composing a manifest reads, so a parameter it
+/// has to supply says so there.
+#[tokio::test]
+async fn test_operations_catalog_reports_required_parameters() {
+    let (_, catalog) = get("/operations").await;
+    let ops = catalog["operations"].as_array().unwrap();
+
+    let required = |op_name: &str, param: &str| -> serde_json::Value {
+        let op = ops.iter().find(|op| op["name"] == op_name).unwrap();
+        op["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == param)
+            .unwrap_or_else(|| panic!("{op_name} has no parameter {param}"))
+            .clone()
+    };
+
+    for (op, param) in [
+        ("buffer", "distance"),
+        ("simplify", "epsilon"),
+        ("filter", "field"),
+        ("filter", "equals"),
+        ("clip", "min_x"),
+        ("clip", "min_y"),
+        ("clip", "max_x"),
+        ("clip", "max_y"),
+        ("expression", "expressions"),
+    ] {
+        let spec = required(op, param);
+        assert_eq!(spec["required"], true, "{op}.{param}: {spec}");
+        // a required parameter cannot also have a value that stands in for it
+        assert!(spec.get("default").is_none(), "{op}.{param}: {spec}");
+    }
+
+    // optional by decision: autodetecting the source CRS and dissolving
+    // everything into one shape are both real requests
+    assert_eq!(required("reproject", "from_crs")["required"], false);
+    assert_eq!(required("dissolve", "group_by")["required"], false);
+
+    // schema_map needs one of three rather than any particular one
+    let schema_map = ops.iter().find(|op| op["name"] == "schema_map").unwrap();
+    for param in ["rename", "drop", "add"] {
+        assert_eq!(required("schema_map", param)["required"], false);
+    }
+    assert_eq!(
+        schema_map["requires_any"]["parameters"],
+        serde_json::json!(["rename", "drop", "add"])
+    );
+    assert!(
+        schema_map["requires_any"]["purpose"].is_string(),
+        "{schema_map}"
+    );
+}
+
+/// reproject is only in the table when the transforms crate is built with proj.
+#[tokio::test]
+async fn test_operations_catalog_requires_the_target_crs() {
+    let (_, catalog) = get("/operations").await;
+    let ops = catalog["operations"].as_array().unwrap();
+    let Some(reproject) = ops.iter().find(|op| op["name"] == "reproject") else {
+        return;
+    };
+    let to_crs = reproject["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "to_crs")
+        .unwrap();
+    assert_eq!(to_crs["required"], true);
+    assert!(to_crs.get("default").is_none(), "{to_crs}");
 }
 
 #[tokio::test]
@@ -377,6 +461,72 @@ path = "{output}"
     // the stored text is a manifest the validator accepts, so it is replayable
     let (status, _) = post("/validate", serde_json::json!({"manifest": manifest})).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// A buffer with no distance used to run with a 1 metre default, so the caller
+/// got a buffer nothing asked for. Both entry points reject it now, and with the
+/// same message, since whatever composed the manifest reads it and retries.
+#[tokio::test]
+async fn test_run_rejects_a_transform_missing_a_required_parameter() {
+    let manifest = r#"
+[project]
+name = "silent"
+
+[[source]]
+name = "pts"
+format = "geojson"
+path = "pts.geojson"
+
+[[transform]]
+name = "wide"
+input = "pts"
+operation = "buffer"
+
+[[sink]]
+name = "out"
+input = "wide"
+format = "geojson"
+path = "out.geojson"
+"#;
+
+    let app = create_router();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/run")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"manifest": manifest}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let problem: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(problem["kind"], "operation");
+    assert!(
+        problem["message"].as_str().unwrap().contains("distance"),
+        "{problem}"
+    );
+
+    let (_, from_validate) = post("/validate", serde_json::json!({"manifest": manifest})).await;
+    assert_eq!(from_validate["message"], problem["message"]);
+
+    // nothing ran, so there is no attempt to record
+    let resp = app
+        .oneshot(Request::builder().uri("/runs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&bytes[..], b"[]");
 }
 
 /// A manifest that parses and builds a valid DAG but cannot run: the CSV sink

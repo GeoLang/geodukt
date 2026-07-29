@@ -22,10 +22,7 @@ impl TransformOp for ReprojectTransform {
             .or(input.crs.as_deref())
             .unwrap_or("EPSG:4326");
 
-        let to_crs = params
-            .get("to_crs")
-            .and_then(|v: &toml::Value| v.as_str())
-            .unwrap_or("EPSG:3857");
+        let to_crs = crate::params::string(params, "reproject", "to_crs")?;
 
         let proj =
             Proj::new_known_crs(from_crs, to_crs, None).map_err(|e| PipelineError::Transform {

@@ -41,10 +41,7 @@ impl TransformOp for BufferTransform {
         input: &FeatureCollection,
         params: &HashMap<String, toml::Value>,
     ) -> Result<FeatureCollection, PipelineError> {
-        let distance = params
-            .get("distance")
-            .and_then(|v: &toml::Value| v.as_float())
-            .unwrap_or(1.0);
+        let distance = crate::params::float(params, "buffer", "distance")?;
 
         let segments = params
             .get("segments")
@@ -311,6 +308,19 @@ mod tests {
             err.to_string().contains("reproject feature"),
             "expected the reproject-feature error, got {err}"
         );
+    }
+
+    /// A buffer with no distance used to fall back to 1 metre, so a caller who
+    /// meant 500 got a metre and was told nothing.
+    #[test]
+    fn test_buffer_without_a_distance_fails_loud() {
+        let err = BufferTransform
+            .apply(
+                &fc(Geometry::Point(point!(x: 0.0, y: 0.0))),
+                &HashMap::new(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("distance"), "{err}");
     }
 
     #[cfg(feature = "reproject")]

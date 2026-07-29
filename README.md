@@ -152,8 +152,8 @@ tables the engine dispatches on, so they cannot drift from what actually runs.
       "name": "simplify",
       "description": "Reduce vertex count with Douglas-Peucker",
       "parameters": [
-        {"name": "epsilon", "param_type": "float", "required": false,
-         "default": "0.001", "description": "Douglas-Peucker tolerance in CRS units, larger removes more vertices"}
+        {"name": "epsilon", "param_type": "float", "required": true,
+         "description": "Douglas-Peucker tolerance in CRS units, larger removes more vertices"}
       ]
     }
   ],
@@ -166,8 +166,26 @@ tables the engine dispatches on, so they cannot drift from what actually runs.
 
 `param_type` is one of `float`, `integer`, `string`, `table`, `array`, `any`.
 `default` is the literal TOML value used when the parameter is absent, so every
-parameter with a default is optional. An operation carrying an `unavailable`
-field cannot run from a manifest, and `/validate` rejects it: `spatial_join` is
+parameter with a default is optional.
+
+A `required` parameter is one the operation cannot stand in a value for, so it
+carries no default and the manifest has to supply it. `/validate` and `/run`
+both reject a transform that leaves one out, naming the transform, the operation
+and what the parameter is for:
+
+```
+transform 'wide' uses operation 'buffer' which cannot run: missing required
+parameter 'distance' (Buffer distance in meters, negative to shrink a polygon)
+```
+
+Required today: `buffer.distance`, `simplify.epsilon`, `reproject.to_crs`,
+`filter.field`, `filter.equals`, `expression.expressions`, and all four edges of
+`clip`, which takes the whole box or none of it. `schema_map` instead carries
+`requires_any`, a group it needs at least one member of, because a schema map
+that renames, drops and adds nothing does nothing.
+
+An operation carrying an `unavailable` field
+cannot run from a manifest, and `/validate` rejects it: `spatial_join` is
 in that state because a transform receives a single input, so a manifest has no
 way to name the second dataset to join against.
 
@@ -198,7 +216,7 @@ which part to fix:
 |------|--------|---------|
 | `toml` | 400 | not valid TOML, or does not match the manifest schema |
 | `graph` | 422 | unknown input, duplicate node name, or a cycle |
-| `operation` | 422 | a transform names an operation that does not exist or cannot run |
+| `operation` | 422 | a transform names an operation that does not exist, cannot run, or leaves out a required parameter |
 | `format` | 422 | a source or sink names a format that is not wired up |
 
 ### POST /run

@@ -14,30 +14,20 @@ impl TransformOp for FilterTransform {
         input: &FeatureCollection,
         params: &HashMap<String, toml::Value>,
     ) -> Result<FeatureCollection, PipelineError> {
-        let field = params
-            .get("field")
-            .and_then(|v: &toml::Value| v.as_str())
-            .unwrap_or("");
-        let equals = params.get("equals");
+        let field = crate::params::string(params, "filter", "field")?;
+        let equals = crate::params::require(params, "filter", "equals")?;
 
         let features: Vec<Feature> = input
             .features
             .iter()
-            .filter(|f| {
-                if field.is_empty() {
-                    return true;
+            .filter(|f| match (f.properties.get(field), equals) {
+                (Some(Value::String(s)), toml::Value::String(expected)) => s == expected,
+                (Some(Value::Integer(n)), toml::Value::Integer(expected)) => n == expected,
+                (Some(Value::Float(n)), toml::Value::Float(expected)) => {
+                    (n - expected).abs() < f64::EPSILON
                 }
-                match (f.properties.get(field), equals) {
-                    (Some(Value::String(s)), Some(toml::Value::String(expected))) => s == expected,
-                    (Some(Value::Integer(n)), Some(toml::Value::Integer(expected))) => {
-                        n == expected
-                    }
-                    (Some(Value::Float(n)), Some(toml::Value::Float(expected))) => {
-                        (n - expected).abs() < f64::EPSILON
-                    }
-                    (Some(Value::Bool(b)), Some(toml::Value::Boolean(expected))) => b == expected,
-                    _ => false,
-                }
+                (Some(Value::Bool(b)), toml::Value::Boolean(expected)) => b == expected,
+                _ => false,
             })
             .cloned()
             .collect();

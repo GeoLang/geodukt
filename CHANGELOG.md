@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Breaking: a transform that leaves out a parameter its operation cannot run
+  without is rejected by `/validate`, `/run` and the CLI, naming the transform,
+  the operation and what the parameter is for. `buffer.distance`,
+  `simplify.epsilon`, `reproject.to_crs`, `filter.field`, `filter.equals`,
+  `expression.expressions` and all four `clip` edges are required and no longer
+  carry a default, and `schema_map` needs at least one of `rename`, `drop` and
+  `add`. A manifest that relied on one of those defaults now fails instead of
+  producing output nobody asked for
+
 ### Added
 - `POST /validate`: check a manifest without running it, returning the step
   order and per-step details, or a problem tagged `toml`, `graph`, `operation`,
