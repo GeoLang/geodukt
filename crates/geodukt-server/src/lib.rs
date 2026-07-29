@@ -2,6 +2,7 @@
 //!
 //! REST API for triggering and monitoring geodukt pipelines.
 
+pub mod auth;
 pub mod gp_tools;
 pub mod validate;
 
@@ -9,11 +10,14 @@ use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
+
+use auth::{AuthConfig, Caller};
 
 use geodukt_core::manifest::Manifest;
 use geodukt_core::pipeline::Pipeline;
@@ -34,6 +38,7 @@ impl AppState {
         manifest_name: String,
         manifest: String,
         steps: Vec<StepRecord>,
+        sub: Option<String>,
     ) -> RunRecord {
         let mut runs = self.runs.lock().unwrap();
         let record = RunRecord {
@@ -42,6 +47,7 @@ impl AppState {
             manifest_name,
             manifest,
             steps,
+            sub,
         };
         runs.push(record.clone());
         record
@@ -57,6 +63,9 @@ pub struct RunRecord {
     /// The manifest TOML exactly as submitted, so the run can be repeated.
     pub manifest: String,
     pub steps: Vec<StepRecord>,
+    /// Token subject that triggered the run, absent when auth is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub: Option<String>,
 }
 
 /// Step record for API response.
@@ -80,8 +89,13 @@ pub struct RunRequest {
     pub manifest: String,
 }
 
-/// Create the server router.
+/// Create the server router, reading the platform secret from the environment.
 pub fn create_router() -> Router {
+    create_router_with_auth(AuthConfig::from_env())
+}
+
+/// Create the server router with an explicit auth config.
+pub fn create_router_with_auth(auth: AuthConfig) -> Router {
     let state = AppState {
         runs: Arc::new(Mutex::new(Vec::new())),
     };
@@ -90,7 +104,10 @@ pub fn create_router() -> Router {
         .route("/health", get(health))
         .route("/operations", get(list_operations))
         .route("/validate", post(validate_manifest))
-        .route("/run", post(trigger_run))
+        .route(
+            "/run",
+            post(trigger_run).layer(from_fn_with_state(auth, auth::require_run_access)),
+        )
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
         .nest("/gp", gp_tools::gp_routes().with_state(()))
@@ -152,6 +169,7 @@ impl IntoResponse for RunError {
 
 async fn trigger_run(
     State(state): State<AppState>,
+    caller: Caller,
     Json(req): Json<RunRequest>,
 ) -> Result<Json<RunRecord>, RunError> {
     let manifest = Manifest::from_toml(&req.manifest)
@@ -180,6 +198,7 @@ async fn trigger_run(
                 name,
                 req.manifest,
                 steps,
+                caller.sub(),
             )))
         }
         // execute drops its progress on error, so a failed run records no steps.
@@ -189,6 +208,7 @@ async fn trigger_run(
             name,
             req.manifest,
             Vec::new(),
+            caller.sub(),
         )))),
     }
 }

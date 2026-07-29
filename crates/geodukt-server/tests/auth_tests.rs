@@ -1,0 +1,231 @@
+//! Tests for the JWT gate on POST /run.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use geodukt_server::auth::{AuthConfig, Claims};
+use geodukt_server::{create_router, create_router_with_auth};
+use tower::ServiceExt;
+
+const SECRET: &str = "0123456789abcdef0123456789abcdef";
+
+fn token(role: &str, ttl_secs: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &Claims {
+            sub: "user-42".into(),
+            exp: (now + ttl_secs) as usize,
+            role: role.into(),
+        },
+        &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+    )
+    .unwrap()
+}
+
+/// Runs a point through to a geojson sink, so a permitted run completes.
+fn working_manifest(dir: &std::path::Path) -> String {
+    let input = dir.join("in.geojson");
+    std::fs::write(
+        &input,
+        r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{},
+             "geometry":{"type":"Point","coordinates":[1,2]}}]}"#,
+    )
+    .unwrap();
+
+    format!(
+        r#"
+[project]
+name = "gated"
+
+[[source]]
+name = "pts"
+format = "geojson"
+path = "{input}"
+
+[[sink]]
+name = "out"
+input = "pts"
+format = "geojson"
+path = "{output}"
+"#,
+        input = input.display(),
+        output = dir.join("out.geojson").display()
+    )
+}
+
+fn run_request(manifest: &str, bearer: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/run")
+        .header("content-type", "application/json");
+    if let Some(bearer) = bearer {
+        builder = builder.header("authorization", format!("Bearer {bearer}"));
+    }
+    builder
+        .body(Body::from(
+            serde_json::json!({"manifest": manifest}).to_string(),
+        ))
+        .unwrap()
+}
+
+async fn send(app: axum::Router, req: Request<Body>) -> (StatusCode, serde_json::Value) {
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+fn gated() -> axum::Router {
+    create_router_with_auth(AuthConfig::new(Some(SECRET.into())))
+}
+
+#[tokio::test]
+async fn valid_editor_token_runs_and_records_the_subject() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+
+    let (status, record) = send(gated(), run_request(&manifest, Some(&token("editor", 60)))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(record["status"], "Completed");
+    assert_eq!(record["sub"], "user-42");
+}
+
+#[tokio::test]
+async fn admin_token_is_allowed_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+
+    let (status, _) = send(gated(), run_request(&manifest, Some(&token("admin", 60)))).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn missing_token_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+
+    let (status, _) = send(gated(), run_request(&manifest, None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(
+        !dir.path().join("out.geojson").exists(),
+        "run must not start"
+    );
+}
+
+#[tokio::test]
+async fn expired_token_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+
+    let (status, body) = send(
+        gated(),
+        run_request(&manifest, Some(&token("editor", -3600))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // the reason stays vague: expired and bad-signature look the same
+    assert_eq!(body["error"], "invalid or expired token");
+    assert!(
+        !dir.path().join("out.geojson").exists(),
+        "run must not start"
+    );
+}
+
+#[tokio::test]
+async fn token_signed_with_another_secret_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+    let foreign = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &Claims {
+            sub: "user-42".into(),
+            exp: usize::MAX,
+            role: "admin".into(),
+        },
+        &jsonwebtoken::EncodingKey::from_secret(b"a-completely-different-secret-val"),
+    )
+    .unwrap();
+
+    let (status, _) = send(gated(), run_request(&manifest, Some(&foreign))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn viewer_role_is_forbidden() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+
+    let (status, body) = send(gated(), run_request(&manifest, Some(&token("viewer", 60)))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "editor or admin role required");
+    assert!(
+        !dir.path().join("out.geojson").exists(),
+        "run must not start"
+    );
+}
+
+#[tokio::test]
+async fn unknown_role_is_forbidden() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+
+    let (status, _) = send(gated(), run_request(&manifest, Some(&token("Editor", 60)))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// No secret configured: /run stays open and the record carries no subject.
+#[tokio::test]
+async fn dev_mode_runs_without_a_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+    let app = create_router_with_auth(AuthConfig::new(None));
+
+    let (status, record) = send(app, run_request(&manifest, None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(record.get("sub").is_none(), "{record}");
+}
+
+/// The side-effect-free endpoints headless planning and the eval harness use
+/// must not need a token even when the gate is on.
+#[tokio::test]
+async fn read_only_endpoints_stay_open_when_gated() {
+    for uri in ["/health", "/operations"] {
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let (status, _) = send(gated(), req).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/validate")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"manifest": manifest}).to_string(),
+        ))
+        .unwrap();
+    let (status, _) = send(gated(), req).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// Without the env var set, the default router is the open dev-mode one.
+#[tokio::test]
+async fn create_router_without_the_secret_is_open() {
+    assert!(
+        std::env::var(geodukt_server::auth::SECRET_ENV).is_err(),
+        "test env must not set the platform secret"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+
+    let (status, _) = send(create_router(), run_request(&manifest, None)).await;
+    assert_eq!(status, StatusCode::OK);
+}
