@@ -106,8 +106,11 @@ fn cmd_run(path: &PathBuf) {
 
     let report = pipeline
         .execute(&reader, &transforms, &writer)
-        .unwrap_or_else(|e| {
-            eprintln!("Execution error: {e}");
+        .unwrap_or_else(|failure| {
+            for step in &failure.completed {
+                eprintln!("  {} — {} features", step.name, step.feature_count);
+            }
+            eprintln!("Execution error: {}", failure.error());
             std::process::exit(1);
         });
 

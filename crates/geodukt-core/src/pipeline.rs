@@ -65,52 +65,87 @@ impl Pipeline {
     }
 
     /// Execute the pipeline with the given source/transform/sink implementations.
+    ///
+    /// On failure the steps that already ran come back with the error, so a
+    /// caller can record how far the run got.
     pub fn execute(
         &self,
         reader: &dyn SourceReader,
         transforms: &HashMap<String, Box<dyn TransformOp>>,
         writer: &dyn SinkWriter,
-    ) -> Result<ExecutionReport, PipelineError> {
-        let order = self.dag.topological_order()?;
+    ) -> Result<ExecutionReport, Box<ExecutionFailure>> {
+        let order = self
+            .dag
+            .topological_order()
+            .map_err(|e| Box::new(ExecutionFailure::before_start(e.into())))?;
+
         let mut data: HashMap<String, FeatureCollection> = HashMap::new();
         let mut report = ExecutionReport::default();
 
-        for node in order {
-            match node {
-                Node::Source(source) => {
-                    let fc = reader.read_source(source)?;
-                    report.record_step(&source.name, fc.len());
-                    data.insert(source.name.clone(), fc);
-                }
-                Node::Transform(transform) => {
-                    let input_data =
-                        data.get(&transform.input)
-                            .ok_or_else(|| PipelineError::Transform {
-                                name: transform.name.clone(),
-                                message: format!("input '{}' not available", transform.input),
-                            })?;
-                    let op = transforms.get(&transform.operation).ok_or_else(|| {
-                        PipelineError::Transform {
-                            name: transform.name.clone(),
-                            message: format!("unknown operation '{}'", transform.operation),
-                        }
-                    })?;
-                    let result = op.apply(input_data, &transform.params)?;
-                    report.record_step(&transform.name, result.len());
-                    data.insert(transform.name.clone(), result);
-                }
-                Node::Sink(sink) => {
-                    let input_data = data.get(&sink.input).ok_or_else(|| PipelineError::Sink {
-                        name: sink.name.clone(),
-                        message: format!("input '{}' not available", sink.input),
-                    })?;
-                    writer.write_sink(input_data, sink)?;
-                    report.record_step(&sink.name, input_data.len());
-                }
+        for (i, node) in order.iter().enumerate() {
+            if let Err(error) =
+                self.run_node(node, reader, transforms, writer, &mut data, &mut report)
+            {
+                return Err(Box::new(ExecutionFailure {
+                    completed: report.steps,
+                    failed: Some(FailedStep {
+                        name: node.name().to_string(),
+                        message: error.to_string(),
+                    }),
+                    not_run: order[i + 1..]
+                        .iter()
+                        .map(|n| n.name().to_string())
+                        .collect(),
+                    error,
+                }));
             }
         }
 
         Ok(report)
+    }
+
+    fn run_node(
+        &self,
+        node: &Node,
+        reader: &dyn SourceReader,
+        transforms: &HashMap<String, Box<dyn TransformOp>>,
+        writer: &dyn SinkWriter,
+        data: &mut HashMap<String, FeatureCollection>,
+        report: &mut ExecutionReport,
+    ) -> Result<(), PipelineError> {
+        match node {
+            Node::Source(source) => {
+                let fc = reader.read_source(source)?;
+                report.record_step(&source.name, fc.len());
+                data.insert(source.name.clone(), fc);
+            }
+            Node::Transform(transform) => {
+                let input_data =
+                    data.get(&transform.input)
+                        .ok_or_else(|| PipelineError::Transform {
+                            name: transform.name.clone(),
+                            message: format!("input '{}' not available", transform.input),
+                        })?;
+                let op = transforms.get(&transform.operation).ok_or_else(|| {
+                    PipelineError::Transform {
+                        name: transform.name.clone(),
+                        message: format!("unknown operation '{}'", transform.operation),
+                    }
+                })?;
+                let result = op.apply(input_data, &transform.params)?;
+                report.record_step(&transform.name, result.len());
+                data.insert(transform.name.clone(), result);
+            }
+            Node::Sink(sink) => {
+                let input_data = data.get(&sink.input).ok_or_else(|| PipelineError::Sink {
+                    name: sink.name.clone(),
+                    message: format!("input '{}' not available", sink.input),
+                })?;
+                writer.write_sink(input_data, sink)?;
+                report.record_step(&sink.name, input_data.len());
+            }
+        }
+        Ok(())
     }
 
     /// Get the manifest.
@@ -130,6 +165,49 @@ pub struct ExecutionReport {
 pub struct StepResult {
     pub name: String,
     pub feature_count: usize,
+}
+
+/// A failed execution, with the progress made before the failure.
+#[derive(Debug, Error)]
+#[error("{error}")]
+pub struct ExecutionFailure {
+    /// Steps that finished before the failure, in execution order.
+    pub completed: Vec<StepResult>,
+    /// The step that failed, absent when the DAG could not be ordered at all.
+    pub failed: Option<FailedStep>,
+    /// Steps the run never reached, in execution order.
+    pub not_run: Vec<String>,
+    #[source]
+    pub error: PipelineError,
+}
+
+/// The step a run died on, and why.
+#[derive(Debug)]
+pub struct FailedStep {
+    pub name: String,
+    pub message: String,
+}
+
+impl ExecutionFailure {
+    fn before_start(error: PipelineError) -> Self {
+        Self {
+            completed: Vec::new(),
+            failed: None,
+            not_run: Vec::new(),
+            error,
+        }
+    }
+
+    /// The underlying error, for callers that do not care about the progress.
+    pub fn error(&self) -> &PipelineError {
+        &self.error
+    }
+}
+
+impl From<ExecutionFailure> for PipelineError {
+    fn from(failure: ExecutionFailure) -> Self {
+        failure.error
+    }
 }
 
 impl ExecutionReport {
@@ -210,6 +288,60 @@ path = "out.geojson"
         assert_eq!(report.steps.len(), 3);
         assert_eq!(report.steps[0].name, "input");
         assert_eq!(report.steps[0].feature_count, 1);
+    }
+
+    #[test]
+    fn test_execute_failure_carries_progress() {
+        struct FailingTransform;
+        impl TransformOp for FailingTransform {
+            fn apply(
+                &self,
+                _input: &FeatureCollection,
+                _params: &HashMap<String, toml::Value>,
+            ) -> Result<FeatureCollection, PipelineError> {
+                Err(PipelineError::Transform {
+                    name: "processed".into(),
+                    message: "boom".into(),
+                })
+            }
+        }
+
+        let toml = r#"
+[project]
+name = "test"
+
+[[source]]
+name = "input"
+format = "geojson"
+path = "data.geojson"
+
+[[transform]]
+name = "processed"
+input = "input"
+operation = "explode"
+
+[[sink]]
+name = "output"
+input = "processed"
+format = "geojson"
+path = "out.geojson"
+"#;
+        let manifest = Manifest::from_toml(toml).unwrap();
+        let pipeline = Pipeline::new(manifest).unwrap();
+
+        let mut transforms: HashMap<String, Box<dyn TransformOp>> = HashMap::new();
+        transforms.insert("explode".into(), Box::new(FailingTransform));
+
+        let failure = pipeline
+            .execute(&MockReader, &transforms, &MockWriter)
+            .unwrap_err();
+
+        assert_eq!(failure.completed.len(), 1);
+        assert_eq!(failure.completed[0].name, "input");
+        let failed = failure.failed.as_ref().unwrap();
+        assert_eq!(failed.name, "processed");
+        assert!(failed.message.contains("boom"), "{}", failed.message);
+        assert_eq!(failure.not_run, vec!["output"]);
     }
 
     #[test]

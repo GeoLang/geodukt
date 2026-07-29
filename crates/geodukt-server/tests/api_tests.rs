@@ -2,7 +2,7 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use geodukt_server::create_router;
+use geodukt_server::{RunRecord, StepStatus, create_router};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -423,12 +423,94 @@ async fn test_failed_run_returns_422_with_the_record() {
     // the failure body is a run record, so a caller parses one shape either way
     assert_eq!(record["id"], 0);
     assert_eq!(record["manifest_name"], "doomed");
-    assert_eq!(record["steps"], serde_json::json!([]));
+
+    // the run got as far as reading the source, and died on the sink
+    let steps = record["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0]["name"], "polys");
+    assert_eq!(steps[0]["status"], "Completed");
+    assert_eq!(steps[0]["feature_count"], 1);
+    assert_eq!(steps[1]["name"], "out");
+    let step_error = steps[1]["status"]["Failed"].as_str().unwrap();
+    assert!(
+        step_error.contains("cannot write a Polygon"),
+        "{step_error}"
+    );
 
     let reason = record["status"]["Failed"].as_str().unwrap();
     assert!(reason.contains("cannot write a Polygon"), "{reason}");
     // the message names the step that failed
     assert!(reason.contains("out"), "{reason}");
+}
+
+#[tokio::test]
+async fn test_failure_mid_pipeline_marks_later_steps_not_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("pts.geojson");
+    std::fs::write(
+        &input,
+        r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"id":1},
+             "geometry":{"type":"Point","coordinates":[0,0]}}]}"#,
+    )
+    .unwrap();
+
+    // spatial_join is registered but has no join dataset, so it always fails
+    let manifest = format!(
+        r#"
+[project]
+name = "midway"
+
+[[source]]
+name = "pts"
+format = "geojson"
+path = "{input}"
+
+[[transform]]
+name = "joined"
+input = "pts"
+operation = "spatial_join"
+
+[[sink]]
+name = "out"
+input = "joined"
+format = "geojson"
+path = "{output}"
+"#,
+        input = input.display(),
+        output = dir.path().join("out.geojson").display()
+    );
+
+    let (status, record) = post("/run", serde_json::json!({"manifest": manifest})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let steps = record["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 3);
+    assert_eq!(steps[0]["name"], "pts");
+    assert_eq!(steps[0]["status"], "Completed");
+    assert_eq!(steps[1]["name"], "joined");
+    assert!(steps[1]["status"]["Failed"].is_string(), "{record}");
+    assert_eq!(steps[2]["name"], "out");
+    assert_eq!(steps[2]["status"], "NotRun");
+}
+
+/// Records written before steps carried a status only ever came from runs that
+/// completed, so they read back as completed steps.
+#[test]
+fn test_old_record_without_step_status_deserializes() {
+    let old = r#"{
+        "id": 3,
+        "status": "Completed",
+        "manifest_name": "legacy",
+        "manifest": "[project]\nname = \"legacy\"\n",
+        "steps": [{"name": "src", "feature_count": 7}]
+    }"#;
+
+    let record: RunRecord = serde_json::from_str(old).unwrap();
+    assert_eq!(record.id, 3);
+    assert_eq!(record.sub, None);
+    assert_eq!(record.steps[0].feature_count, 7);
+    assert_eq!(record.steps[0].status, StepStatus::Completed);
 }
 
 #[tokio::test]

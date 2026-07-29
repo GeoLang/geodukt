@@ -20,7 +20,7 @@ use tower_http::cors::CorsLayer;
 use auth::{AuthConfig, Caller};
 
 use geodukt_core::manifest::Manifest;
-use geodukt_core::pipeline::Pipeline;
+use geodukt_core::pipeline::{Pipeline, StepResult};
 use geodukt_io::formats::{FormatSpec, MultiFormatReader, MultiFormatWriter, formats};
 use geodukt_transforms::registry::{OperationSpec, default_registry, operations};
 
@@ -73,6 +73,19 @@ pub struct RunRecord {
 pub struct StepRecord {
     pub name: String,
     pub feature_count: usize,
+    /// Absent from records stored before failed runs kept their steps, and
+    /// those only ever came from runs that completed.
+    #[serde(default)]
+    pub status: StepStatus,
+}
+
+/// How a single step ended.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub enum StepStatus {
+    #[default]
+    Completed,
+    Failed(String),
+    NotRun,
 }
 
 /// Pipeline run status.
@@ -185,14 +198,7 @@ async fn trigger_run(
 
     match pipeline.execute(&reader, &transforms, &writer) {
         Ok(report) => {
-            let steps = report
-                .steps
-                .iter()
-                .map(|s| StepRecord {
-                    name: s.name.clone(),
-                    feature_count: s.feature_count,
-                })
-                .collect();
+            let steps = report.steps.iter().map(completed_step).collect();
             Ok(Json(state.record(
                 RunStatus::Completed,
                 name,
@@ -201,15 +207,37 @@ async fn trigger_run(
                 caller.sub(),
             )))
         }
-        // execute drops its progress on error, so a failed run records no steps.
-        // the message names the step that failed.
-        Err(e) => Err(RunError::Failed(Box::new(state.record(
-            RunStatus::Failed(format!("Execution error: {e}")),
-            name,
-            req.manifest,
-            Vec::new(),
-            caller.sub(),
-        )))),
+        Err(failure) => {
+            let mut steps: Vec<StepRecord> = failure.completed.iter().map(completed_step).collect();
+            if let Some(failed) = &failure.failed {
+                steps.push(StepRecord {
+                    name: failed.name.clone(),
+                    feature_count: 0,
+                    status: StepStatus::Failed(failed.message.clone()),
+                });
+            }
+            steps.extend(failure.not_run.iter().map(|name| StepRecord {
+                name: name.clone(),
+                feature_count: 0,
+                status: StepStatus::NotRun,
+            }));
+
+            Err(RunError::Failed(Box::new(state.record(
+                RunStatus::Failed(format!("Execution error: {}", failure.error())),
+                name,
+                req.manifest,
+                steps,
+                caller.sub(),
+            ))))
+        }
+    }
+}
+
+fn completed_step(step: &StepResult) -> StepRecord {
+    StepRecord {
+        name: step.name.clone(),
+        feature_count: step.feature_count,
+        status: StepStatus::Completed,
     }
 }
 

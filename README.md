@@ -211,10 +211,13 @@ Both outcomes return a run record, so a caller parses one shape either way. The
 
 ```json
 {"id": 0, "status": "Completed", "manifest_name": "city", "manifest": "<TOML>",
- "steps": [{"name": "parcels", "feature_count": 120}]}
+ "steps": [{"name": "parcels", "feature_count": 120, "status": "Completed"}]}
 
 {"id": 1, "status": {"Failed": "Execution error: sink error for 'out': csv carries point geometry as lon/lat columns, cannot write a Polygon, ..."},
- "manifest_name": "doomed", "manifest": "<TOML>", "steps": []}
+ "manifest_name": "doomed", "manifest": "<TOML>",
+ "steps": [{"name": "polys", "feature_count": 1, "status": "Completed"},
+           {"name": "out", "feature_count": 0, "status": {"Failed": "sink error for 'out': ..."}},
+           {"name": "report", "feature_count": 0, "status": "NotRun"}]}
 ```
 
 | outcome | status | body |
@@ -230,8 +233,10 @@ tell a client the server misbehaved and the request is worth retrying, when it i
 not. A 400 is reserved for a body that never became a pipeline, and that case
 records nothing because no run was attempted.
 
-A failed record carries no steps, because the executor discards its progress when
-a step fails. The reason names the step that failed.
+A failed record keeps its steps: the ones that finished are `Completed` with
+their feature counts, the one that died carries its own error, and the ones the
+run never reached are `NotRun`. Records stored before steps had a status read
+back as `Completed`.
 
 ## Architecture
 
