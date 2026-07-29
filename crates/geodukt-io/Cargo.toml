@@ -20,6 +20,8 @@ object_store = { version = "0.11", features = ["aws", "gcp", "azure"] }
 tokio = { version = "1", features = ["rt"] }
 bytes = "1"
 futures = "0.3"
+crs-definitions = { version = "0.5", default-features = false, features = ["wkt"] }
+geozero = { version = "0.15", default-features = false, features = ["with-geo", "with-wkb"] }
 
 [features]
 default = []

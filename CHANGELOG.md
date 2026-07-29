@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Filter transform (property-based feature filtering)
 - Transform registry with named operation lookup
 - GeoJSON source reader and sink writer
+- GeoPackage source and sink, with a `layer` parameter, geometry as GeoPackage
+  binary, typed attribute columns, and CRS round trips
+- Shapefile source and sink, writing the .shp/.shx/.dbf sidecars and a .prj,
+  and rejecting collections a shapefile cannot represent
 - CSV source reader (lon/lat column detection)
 - CLI tool: `run`, `validate`, `graph`, `init` subcommands
 - GitHub Actions CI (Ubuntu, Windows, macOS)

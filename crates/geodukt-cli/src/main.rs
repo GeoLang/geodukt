@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use geodukt_core::manifest::Manifest;
 use geodukt_core::pipeline::Pipeline;
 use geodukt_io::docgen;
-use geodukt_io::geojson_io::{MultiFormatReader, MultiFormatWriter};
+use geodukt_io::formats::{MultiFormatReader, MultiFormatWriter};
 use geodukt_transforms::registry::default_registry;
 
 #[derive(Parser)]

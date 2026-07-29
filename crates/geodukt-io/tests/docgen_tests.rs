@@ -80,3 +80,30 @@ fn test_generate_html_wraps_content() {
     assert!(html.contains("<title>test-pipeline"));
     assert!(html.contains("# test-pipeline"));
 }
+
+#[test]
+fn test_generate_markdown_names_geopackage_layer() {
+    let manifest = Manifest::from_toml(
+        r#"
+[project]
+name = "gpkg-docs"
+
+[[source]]
+name = "parcels"
+format = "geopackage"
+path = "data/city.gpkg"
+layer = "parcels"
+
+[[sink]]
+name = "out"
+input = "parcels"
+format = "geopackage"
+path = "out/city.gpkg"
+layer = "parcels_centroids"
+"#,
+    )
+    .unwrap();
+    let md = docgen::generate_markdown(&manifest);
+    assert!(md.contains("| parcels | geopackage | data/city.gpkg (layer: parcels) |"));
+    assert!(md.contains("| out | geopackage | out/city.gpkg (layer: parcels_centroids) |"));
+}

@@ -16,3 +16,7 @@ geodukt-server = { path = "../geodukt-server" }
 geodukt-plugins = { path = "../geodukt-plugins" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+geo = "0.33"
+tempfile = "3"

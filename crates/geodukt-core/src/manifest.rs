@@ -33,6 +33,10 @@ pub struct Source {
     pub format: String,
     pub path: String,
     pub crs: Option<String>,
+    /// Layer (table) to read for multi-layer formats such as GeoPackage.
+    /// When absent the first feature table in the file is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
 }
 
 /// A transform node.
@@ -53,7 +57,14 @@ pub struct Sink {
     pub input: String,
     pub format: String,
     pub path: String,
+    /// Layer (table) to write for multi-layer formats such as GeoPackage.
+    /// Defaults to [`DEFAULT_LAYER`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
 }
+
+/// Layer (table) name used when a GeoPackage source or sink does not name one.
+pub const DEFAULT_LAYER: &str = "features";
 
 impl Manifest {
     /// Parse a manifest from TOML string.
@@ -115,6 +126,7 @@ path = "output/buffered.geojson"
                 format: "csv".into(),
                 path: "data.csv".into(),
                 crs: Some("EPSG:4326".into()),
+                layer: None,
             }],
             transform: vec![],
             sink: vec![],
@@ -122,5 +134,29 @@ path = "output/buffered.geojson"
         let s = manifest.to_toml().unwrap();
         let parsed = Manifest::from_toml(&s).unwrap();
         assert_eq!(parsed.project.name, "roundtrip");
+    }
+
+    #[test]
+    fn test_parse_layer_on_source_and_sink() {
+        let toml = r#"
+[project]
+name = "gpkg"
+
+[[source]]
+name = "parcels"
+format = "geopackage"
+path = "data/city.gpkg"
+layer = "parcels"
+
+[[sink]]
+name = "out"
+input = "parcels"
+format = "geopackage"
+path = "out/city.gpkg"
+layer = "parcels_buffered"
+"#;
+        let manifest = Manifest::from_toml(toml).unwrap();
+        assert_eq!(manifest.source[0].layer.as_deref(), Some("parcels"));
+        assert_eq!(manifest.sink[0].layer.as_deref(), Some("parcels_buffered"));
     }
 }

@@ -5,25 +5,15 @@ use std::fs;
 
 use geo::{Geometry, Point};
 use geodukt_core::feature::{Feature, FeatureCollection, Value};
+use geodukt_core::manifest::Source;
 use geodukt_core::pipeline::{PipelineError, SourceReader};
 
 /// CSV source reader — expects columns named "lon"/"longitude" and "lat"/"latitude".
 pub struct CsvReader;
 
 impl SourceReader for CsvReader {
-    fn read_source(
-        &self,
-        format: &str,
-        path: &str,
-        _crs: Option<&str>,
-    ) -> Result<FeatureCollection, PipelineError> {
-        if format != "csv" {
-            return Err(PipelineError::Source {
-                name: path.to_string(),
-                message: format!("unsupported format: {format}"),
-            });
-        }
-
+    fn read_source(&self, source: &Source) -> Result<FeatureCollection, PipelineError> {
+        let path = &source.path;
         let content = fs::read_to_string(path).map_err(|e| PipelineError::Source {
             name: path.to_string(),
             message: e.to_string(),
@@ -114,7 +104,15 @@ mod tests {
         tmp.write_all(csv_data.as_bytes()).unwrap();
         let path = tmp.path().to_str().unwrap();
 
-        let fc = CsvReader.read_source("csv", path, None).unwrap();
+        let fc = CsvReader
+            .read_source(&Source {
+                name: "points".into(),
+                format: "csv".into(),
+                path: path.to_string(),
+                crs: None,
+                layer: None,
+            })
+            .unwrap();
         assert_eq!(fc.len(), 2);
         assert_eq!(
             fc.features[0].properties.get("name"),

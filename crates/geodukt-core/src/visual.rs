@@ -162,6 +162,11 @@ impl VisualPipeline {
                             .get("crs")
                             .and_then(|v| v.as_str())
                             .map(String::from),
+                        layer: node
+                            .params
+                            .get("layer")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                     });
                 }
                 NodeKind::Transform => {
@@ -201,6 +206,11 @@ impl VisualPipeline {
                         input,
                         format: param_str(&node.params, "format"),
                         path: param_str(&node.params, "path"),
+                        layer: node
+                            .params
+                            .get("layer")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                     });
                 }
             }

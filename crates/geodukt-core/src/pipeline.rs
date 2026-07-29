@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::dag::{Dag, DagError, Node};
 use crate::feature::FeatureCollection;
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, Sink, Source};
 
 /// Errors during pipeline execution.
 #[derive(Debug, Error)]
@@ -24,12 +24,7 @@ pub enum PipelineError {
 
 /// Trait for reading feature data from a source.
 pub trait SourceReader {
-    fn read_source(
-        &self,
-        format: &str,
-        path: &str,
-        crs: Option<&str>,
-    ) -> Result<FeatureCollection, PipelineError>;
+    fn read_source(&self, source: &Source) -> Result<FeatureCollection, PipelineError>;
 }
 
 /// Trait for applying a spatial transform.
@@ -43,12 +38,7 @@ pub trait TransformOp {
 
 /// Trait for writing feature data to a sink.
 pub trait SinkWriter {
-    fn write_sink(
-        &self,
-        data: &FeatureCollection,
-        format: &str,
-        path: &str,
-    ) -> Result<(), PipelineError>;
+    fn write_sink(&self, data: &FeatureCollection, sink: &Sink) -> Result<(), PipelineError>;
 }
 
 /// Pipeline executor — runs the DAG with pluggable source/transform/sink implementations.
@@ -84,8 +74,7 @@ impl Pipeline {
         for node in order {
             match node {
                 Node::Source(source) => {
-                    let fc =
-                        reader.read_source(&source.format, &source.path, source.crs.as_deref())?;
+                    let fc = reader.read_source(source)?;
                     report.record_step(&source.name, fc.len());
                     data.insert(source.name.clone(), fc);
                 }
@@ -111,7 +100,7 @@ impl Pipeline {
                         name: sink.name.clone(),
                         message: format!("input '{}' not available", sink.input),
                     })?;
-                    writer.write_sink(input_data, &sink.format, &sink.path)?;
+                    writer.write_sink(input_data, sink)?;
                     report.record_step(&sink.name, input_data.len());
                 }
             }
@@ -156,12 +145,7 @@ mod tests {
 
     struct MockReader;
     impl SourceReader for MockReader {
-        fn read_source(
-            &self,
-            _format: &str,
-            _path: &str,
-            _crs: Option<&str>,
-        ) -> Result<FeatureCollection, PipelineError> {
+        fn read_source(&self, _source: &Source) -> Result<FeatureCollection, PipelineError> {
             let features = vec![Feature {
                 geometry: geo::Geometry::Point(point!(x: 1.0, y: 2.0)),
                 properties: HashMap::from([("id".into(), Value::Integer(1))]),
@@ -183,12 +167,7 @@ mod tests {
 
     struct MockWriter;
     impl SinkWriter for MockWriter {
-        fn write_sink(
-            &self,
-            _data: &FeatureCollection,
-            _format: &str,
-            _path: &str,
-        ) -> Result<(), PipelineError> {
+        fn write_sink(&self, _data: &FeatureCollection, _sink: &Sink) -> Result<(), PipelineError> {
             Ok(())
         }
     }

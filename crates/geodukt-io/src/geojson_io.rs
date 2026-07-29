@@ -4,6 +4,7 @@ use std::fs;
 
 use geo::Geometry;
 use geodukt_core::feature::{Feature, FeatureCollection, Value};
+use geodukt_core::manifest::{Sink, Source};
 use geodukt_core::pipeline::{PipelineError, SinkWriter, SourceReader};
 use geojson::GeoJson;
 
@@ -11,19 +12,8 @@ use geojson::GeoJson;
 pub struct GeoJsonReader;
 
 impl SourceReader for GeoJsonReader {
-    fn read_source(
-        &self,
-        format: &str,
-        path: &str,
-        _crs: Option<&str>,
-    ) -> Result<FeatureCollection, PipelineError> {
-        if format != "geojson" {
-            return Err(PipelineError::Source {
-                name: path.to_string(),
-                message: format!("unsupported format: {format}"),
-            });
-        }
-
+    fn read_source(&self, source: &Source) -> Result<FeatureCollection, PipelineError> {
+        let path = &source.path;
         let content = fs::read_to_string(path).map_err(|e| PipelineError::Source {
             name: path.to_string(),
             message: e.to_string(),
@@ -63,19 +53,8 @@ impl SourceReader for GeoJsonReader {
 pub struct GeoJsonWriter;
 
 impl SinkWriter for GeoJsonWriter {
-    fn write_sink(
-        &self,
-        data: &FeatureCollection,
-        format: &str,
-        path: &str,
-    ) -> Result<(), PipelineError> {
-        if format != "geojson" {
-            return Err(PipelineError::Sink {
-                name: path.to_string(),
-                message: format!("unsupported format: {format}"),
-            });
-        }
-
+    fn write_sink(&self, data: &FeatureCollection, sink: &Sink) -> Result<(), PipelineError> {
+        let path = &sink.path;
         let features: Vec<geojson::Feature> = data
             .features
             .iter()
@@ -100,12 +79,12 @@ impl SinkWriter for GeoJsonWriter {
             foreign_members: None,
         };
 
-        if let Some(parent) = std::path::Path::new(path).parent() {
-            fs::create_dir_all(parent).map_err(|e| PipelineError::Sink {
+        crate::formats::create_parent_dir(std::path::Path::new(path)).map_err(|e| {
+            PipelineError::Sink {
                 name: path.to_string(),
                 message: e.to_string(),
-            })?;
-        }
+            }
+        })?;
 
         fs::write(path, fc.to_string()).map_err(|e| PipelineError::Sink {
             name: path.to_string(),
@@ -144,46 +123,6 @@ fn value_to_json(v: &Value) -> serde_json::Value {
     }
 }
 
-/// Multi-format reader that delegates to format-specific readers.
-pub struct MultiFormatReader;
-
-impl SourceReader for MultiFormatReader {
-    fn read_source(
-        &self,
-        format: &str,
-        path: &str,
-        crs: Option<&str>,
-    ) -> Result<FeatureCollection, PipelineError> {
-        match format {
-            "geojson" => GeoJsonReader.read_source(format, path, crs),
-            _ => Err(PipelineError::Source {
-                name: path.to_string(),
-                message: format!("unsupported format: {format}"),
-            }),
-        }
-    }
-}
-
-/// Multi-format writer that delegates to format-specific writers.
-pub struct MultiFormatWriter;
-
-impl SinkWriter for MultiFormatWriter {
-    fn write_sink(
-        &self,
-        data: &FeatureCollection,
-        format: &str,
-        path: &str,
-    ) -> Result<(), PipelineError> {
-        match format {
-            "geojson" => GeoJsonWriter.write_sink(data, format, path),
-            _ => Err(PipelineError::Sink {
-                name: path.to_string(),
-                message: format!("unsupported format: {format}"),
-            }),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,12 +144,31 @@ mod tests {
         tmp.write_all(geojson_str.as_bytes()).unwrap();
         let path = tmp.path().to_str().unwrap();
 
-        let fc = GeoJsonReader.read_source("geojson", path, None).unwrap();
+        let fc = GeoJsonReader
+            .read_source(&Source {
+                name: "in".into(),
+                format: "geojson".into(),
+                path: path.to_string(),
+                crs: None,
+                layer: None,
+            })
+            .unwrap();
         assert_eq!(fc.len(), 1);
 
         let out = NamedTempFile::new().unwrap();
         let out_path = out.path().to_str().unwrap().to_string();
-        GeoJsonWriter.write_sink(&fc, "geojson", &out_path).unwrap();
+        GeoJsonWriter
+            .write_sink(
+                &fc,
+                &Sink {
+                    name: "out".into(),
+                    input: "in".into(),
+                    format: "geojson".into(),
+                    path: out_path.clone(),
+                    layer: None,
+                },
+            )
+            .unwrap();
 
         let written = fs::read_to_string(&out_path).unwrap();
         assert!(written.contains("Point"));

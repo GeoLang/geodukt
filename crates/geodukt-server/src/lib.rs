@@ -15,7 +15,7 @@ use tower_http::cors::CorsLayer;
 
 use geodukt_core::manifest::Manifest;
 use geodukt_core::pipeline::Pipeline;
-use geodukt_io::geojson_io::{MultiFormatReader, MultiFormatWriter};
+use geodukt_io::formats::{MultiFormatReader, MultiFormatWriter};
 use geodukt_transforms::registry::default_registry;
 
 /// Shared server state.

@@ -2,6 +2,14 @@
 
 use geodukt_core::manifest::Manifest;
 
+/// Render a path, naming the layer when the format has more than one.
+fn location(path: &str, layer: Option<&str>) -> String {
+    match layer {
+        Some(layer) => format!("{path} (layer: {layer})"),
+        None => path.to_string(),
+    }
+}
+
 /// Generate Markdown documentation from a manifest.
 pub fn generate_markdown(manifest: &Manifest) -> String {
     let mut doc = String::new();
@@ -16,7 +24,9 @@ pub fn generate_markdown(manifest: &Manifest) -> String {
     for src in &manifest.source {
         doc.push_str(&format!(
             "| {} | {} | {} |\n",
-            src.name, src.format, src.path
+            src.name,
+            src.format,
+            location(&src.path, src.layer.as_deref())
         ));
     }
     doc.push('\n');
@@ -35,7 +45,12 @@ pub fn generate_markdown(manifest: &Manifest) -> String {
     doc.push_str("| Name | Format | Path |\n");
     doc.push_str("|------|--------|------|\n");
     for s in &manifest.sink {
-        doc.push_str(&format!("| {} | {} | {} |\n", s.name, s.format, s.path));
+        doc.push_str(&format!(
+            "| {} | {} | {} |\n",
+            s.name,
+            s.format,
+            location(&s.path, s.layer.as_deref())
+        ));
     }
     doc.push('\n');
 

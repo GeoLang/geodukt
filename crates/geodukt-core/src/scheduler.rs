@@ -34,8 +34,7 @@ impl ParallelScheduler {
             .par_iter()
             .map(|node| {
                 if let Node::Source(source) = node {
-                    let fc =
-                        reader.read_source(&source.format, &source.path, source.crs.as_deref())?;
+                    let fc = reader.read_source(source)?;
                     Ok((source.name.clone(), fc))
                 } else {
                     unreachable!()
@@ -84,7 +83,7 @@ impl ParallelScheduler {
                         name: sink.name.clone(),
                         message: format!("input '{}' not available", sink.input),
                     })?;
-                    writer.write_sink(input_data, &sink.format, &sink.path)?;
+                    writer.write_sink(input_data, sink)?;
                     report.steps.push(StepResult {
                         name: sink.name.clone(),
                         feature_count: input_data.len(),
