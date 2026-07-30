@@ -17,18 +17,14 @@ path = "data/input.geojson"
 name = "buffered"
 input = "input"
 operation = "buffer"
-
-[transform.params]
 distance = 100.0
 
 [[transform]]
 name = "filtered"
 input = "buffered"
 operation = "filter"
-
-[transform.params]
-property = "type"
-value = "road"
+field = "type"
+equals = "road"
 
 [[sink]]
 name = "output"
