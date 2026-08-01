@@ -224,6 +224,11 @@ which part to fix:
 Same body as `/validate`. Executes the manifest and records the attempt, whether
 it succeeds or not, so every run is retrievable from `/runs`.
 
+When `PLATFORM_JWT_SECRET` is set, `/run` requires a platform JWT with the
+editor or admin role and records the caller's `sub` on the run. `/validate`,
+`/operations` and `/health` stay open. Unset means no gate, the standalone
+single-user flow.
+
 Both outcomes return a run record, so a caller parses one shape either way. The
 `status` field tells them apart:
 
