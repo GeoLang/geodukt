@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `Pipeline::execute` runs the engine-mappable head of a pipeline on a
+  [geoplumb](https://github.com/GeoLang/geoplumb) pull graph. A source whose
+  data the engine can hold and whose next operation is `filter`, `schema_map`
+  or `clip` becomes a `VecSrc`, that run of operations becomes elements, and
+  the features come back at the first node the engine cannot run: a
+  full-extent pull whose tile fragments are dissolved into whole features.
+  A source feeding only sinks or operations the engine does not run stays off
+  it. Manifests, the CLI and the REST API are unchanged, and so are the
+  per-step feature counts
+- Breaking: `clip` on the engine cuts lines at the boundary and drops points
+  outside it, where the in-memory clip returns lines and points untouched. A
+  chain the engine does not run, such as one behind a `reproject`, still gets
+  the in-memory behaviour
+- A polygon wide enough to cross engine tile seams comes back geometrically
+  equal but not vertex for vertex: merging its fragments rebuilds the rings,
+  which drops collinear vertices
 - Geometry now comes from topoi and coordinate transforms from projicio, both
   pure Rust, replacing the `geo`, `proj` and `geozero` crates. `Feature.geometry`
   is a `topoi_core::geojson::FeatureGeometry`, which drops the `Line`, `Rect` and

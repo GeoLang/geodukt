@@ -197,12 +197,17 @@ async fn trigger_run(
 
     validate::check_missing_parameters(&manifest).map_err(RunError::Rejected)?;
 
-    let transforms = default_registry();
-    let reader = MultiFormatReader;
-    let writer = MultiFormatWriter;
     let name = manifest.project.name;
 
-    match pipeline.execute(&reader, &transforms, &writer) {
+    // a run reads whole files and computes inline, so it would hold an async
+    // worker for as long as it takes
+    let outcome = tokio::task::spawn_blocking(move || {
+        pipeline.execute(&MultiFormatReader, &default_registry(), &MultiFormatWriter)
+    })
+    .await
+    .expect("pipeline run panicked");
+
+    match outcome {
         Ok(report) => {
             let steps = report.steps.iter().map(completed_step).collect();
             Ok(Json(state.record(

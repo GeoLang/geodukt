@@ -262,6 +262,21 @@ their feature counts, the one that died carries its own error, and the ones the
 run never reached are `NotRun`. Records stored before steps had a status read
 back as `Completed`.
 
+## Execution
+
+A run walks the DAG in topological order. The head of a pipeline that
+[geoplumb](https://github.com/GeoLang/geoplumb) can run goes onto a pull graph
+instead of the in-memory transforms: a source whose next operation is `filter`,
+`schema_map` or `clip` becomes an engine source, that run of operations becomes
+engine elements, and the features come back at the first node the engine cannot
+run, pulled over the whole extent and merged back into whole features. Feature
+counts per step are the same either way, and a source with nothing mappable
+under it never goes near the engine.
+
+`clip` on the engine cuts lines at the boundary and drops points outside it.
+The in-memory `clip`, which a chain reaches once something like `reproject` has
+taken it off the engine, still passes lines and points through untouched.
+
 ## Architecture
 
 ```
