@@ -178,29 +178,20 @@ fn analyze_column(values: &[&Value], total_features: usize) -> ColumnStats {
     }
 }
 
-fn geometry_type_name(geom: &geo::Geometry<f64>) -> String {
-    match geom {
-        geo::Geometry::Point(_) => "Point".to_string(),
-        geo::Geometry::MultiPoint(_) => "MultiPoint".to_string(),
-        geo::Geometry::LineString(_) => "LineString".to_string(),
-        geo::Geometry::MultiLineString(_) => "MultiLineString".to_string(),
-        geo::Geometry::Polygon(_) => "Polygon".to_string(),
-        geo::Geometry::MultiPolygon(_) => "MultiPolygon".to_string(),
-        geo::Geometry::GeometryCollection(_) => "GeometryCollection".to_string(),
-        _ => "Unknown".to_string(),
-    }
+fn geometry_type_name(geom: &crate::geometry::FeatureGeometry) -> String {
+    crate::geometry::type_name(geom).to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::feature::Feature;
-    use geo::{Geometry, point};
+    use crate::geometry::{FeatureGeometry, Point};
 
     fn sample_fc() -> FeatureCollection {
         let features = vec![
             Feature {
-                geometry: Geometry::Point(point!(x: 1.0, y: 2.0)),
+                geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
                 properties: HashMap::from([
                     ("name".to_string(), Value::String("foo".to_string())),
                     ("count".to_string(), Value::Integer(42)),
@@ -208,7 +199,7 @@ mod tests {
                 ]),
             },
             Feature {
-                geometry: Geometry::Point(point!(x: 3.0, y: 4.0)),
+                geometry: FeatureGeometry::Point(Point::new(3.0, 4.0)),
                 properties: HashMap::from([
                     ("name".to_string(), Value::String("bar".to_string())),
                     ("count".to_string(), Value::Integer(7)),

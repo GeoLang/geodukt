@@ -1,13 +1,14 @@
 //! Feature representation — the unit of data flowing through the pipeline.
 
-use geo::Geometry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+use crate::geometry::FeatureGeometry;
 
 /// A single geospatial feature with geometry and properties.
 #[derive(Debug, Clone)]
 pub struct Feature {
-    pub geometry: Geometry<f64>,
+    pub geometry: FeatureGeometry,
     pub properties: Properties,
 }
 
@@ -56,12 +57,12 @@ impl FeatureCollection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo::point;
+    use crate::geometry::Point;
 
     #[test]
     fn test_feature_collection() {
         let f = Feature {
-            geometry: Geometry::Point(point!(x: 1.0, y: 2.0)),
+            geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
             properties: HashMap::from([("name".into(), Value::String("test".into()))]),
         };
         let fc = FeatureCollection::new(vec![f], Some("EPSG:4326".into()));

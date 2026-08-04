@@ -83,7 +83,7 @@ pub struct StreamReport {
 mod tests {
     use super::*;
     use crate::feature::Value;
-    use geo::{Geometry, point};
+    use crate::geometry::{FeatureGeometry, Point};
     use std::collections::HashMap;
 
     struct VecSource {
@@ -136,11 +136,11 @@ mod tests {
     fn test_streaming_pipeline() {
         let features = vec![
             Feature {
-                geometry: Geometry::Point(point!(x: 0.0, y: 0.0)),
+                geometry: FeatureGeometry::Point(Point::new(0.0, 0.0)),
                 properties: HashMap::from([("keep".into(), Value::Bool(true))]),
             },
             Feature {
-                geometry: Geometry::Point(point!(x: 1.0, y: 1.0)),
+                geometry: FeatureGeometry::Point(Point::new(1.0, 1.0)),
                 properties: HashMap::from([("keep".into(), Value::Bool(false))]),
             },
         ];

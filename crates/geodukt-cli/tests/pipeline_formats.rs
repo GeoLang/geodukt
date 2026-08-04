@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use geodukt_core::feature::{Feature, FeatureCollection, Value};
+use geodukt_core::geometry::{Coord, FeatureGeometry, Point, Polygon, equals};
 use geodukt_core::manifest::Manifest;
 use geodukt_core::pipeline::Pipeline;
 use geodukt_io::formats::{MultiFormatReader, MultiFormatWriter};
@@ -21,16 +22,13 @@ fn run(manifest_toml: &str) -> Vec<usize> {
     report.steps.iter().map(|s| s.feature_count).collect()
 }
 
-fn square(offset: f64) -> geo::Geometry {
-    geo::Geometry::Polygon(geo::Polygon::new(
-        geo::LineString::from(vec![
-            (offset, offset),
-            (offset + 2.0, offset),
-            (offset + 2.0, offset + 2.0),
-            (offset, offset + 2.0),
-        ]),
-        vec![],
-    ))
+fn square(offset: f64) -> FeatureGeometry {
+    FeatureGeometry::Polygon(Polygon::from_coords(&[
+        Coord::new(offset, offset),
+        Coord::new(offset + 2.0, offset),
+        Coord::new(offset + 2.0, offset + 2.0),
+        Coord::new(offset, offset + 2.0),
+    ]))
 }
 
 fn parcel(offset: f64, name: &str, id: i64, area: f64) -> Feature {
@@ -98,18 +96,18 @@ layer = "centroids"
             .clone()
     };
     let north = by_name("north");
-    assert_eq!(
-        north.geometry,
-        geo::Geometry::Point(geo::Point::new(1.0, 1.0))
-    );
+    assert!(equals(
+        &north.geometry,
+        &FeatureGeometry::Point(Point::new(1.0, 1.0))
+    ));
     assert_eq!(north.properties.get("id"), Some(&Value::Integer(1)));
     assert_eq!(north.properties.get("area"), Some(&Value::Float(4.0)));
 
     let south = by_name("south");
-    assert_eq!(
-        south.geometry,
-        geo::Geometry::Point(geo::Point::new(11.0, 11.0))
-    );
+    assert!(equals(
+        &south.geometry,
+        &FeatureGeometry::Point(Point::new(11.0, 11.0))
+    ));
     assert_eq!(south.properties.get("area"), Some(&Value::Float(4.5)));
 }
 
@@ -176,7 +174,7 @@ path = "{output}"
     assert_eq!(written.len(), 2);
     assert!(matches!(
         written.features[0].geometry,
-        geo::Geometry::Polygon(_)
+        FeatureGeometry::Polygon(_)
     ));
     assert_eq!(
         written.features[0].properties.get("name"),

@@ -12,6 +12,7 @@ Define transformations as a DAG of models. Geodukt resolves dependencies, valida
 - **Declarative pipeline definitions** — TOML manifest files describe sources, transforms, and sinks
 - **DAG execution engine** — automatic dependency resolution, parallel where possible
 - **Spatial transforms** — reproject, clip, buffer, simplify, centroid, dissolve, filter, expression, schema map
+- **Pure Rust**: geometry through [topoi](https://github.com/GeoLang/topoi), coordinate transforms through [projicio](https://github.com/GeoLang/projicio), so a build needs no PROJ or GEOS on the machine
 - **Formats** — pipeline sources and sinks read and write GeoJSON, GeoPackage, Shapefile, and CSV
 - **Validation** — geometry validity checks, CRS verification, schema assertions
 - **Incremental processing** — hash-based change detection, only reprocess what changed

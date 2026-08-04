@@ -93,12 +93,12 @@ fn toml_to_value(v: &toml::Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo::{Geometry, point};
+    use geodukt_core::geometry::{FeatureGeometry, Point};
 
     #[test]
     fn test_schema_map() {
         let features = vec![Feature {
-            geometry: Geometry::Point(point!(x: 0.0, y: 0.0)),
+            geometry: FeatureGeometry::Point(Point::new(0.0, 0.0)),
             properties: HashMap::from([
                 ("old_name".into(), Value::String("hello".into())),
                 ("remove_me".into(), Value::Integer(42)),
@@ -135,7 +135,7 @@ mod tests {
     fn test_schema_map_that_changes_nothing_fails_loud() {
         let fc = FeatureCollection::new(
             vec![Feature {
-                geometry: Geometry::Point(point!(x: 0.0, y: 0.0)),
+                geometry: FeatureGeometry::Point(Point::new(0.0, 0.0)),
                 properties: HashMap::new(),
             }],
             None,

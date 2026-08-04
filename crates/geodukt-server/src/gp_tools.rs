@@ -18,6 +18,7 @@ use geodukt_transforms::clip::ClipTransform;
 use geodukt_transforms::dissolve::DissolveTransform;
 use geodukt_transforms::registry::{OperationSpec, operation};
 use geodukt_transforms::simplify::SimplifyTransform;
+use topoi_core::geojson;
 
 /// The operations exposed as GP endpoints, a subset of the pipeline's operations.
 /// Kept in the same order as the routes below.
@@ -70,57 +71,33 @@ async fn catalog() -> Json<Vec<OperationSpec>> {
 
 /// Parse a GeoJSON FeatureCollection into internal representation.
 fn parse_input(input: &serde_json::Value) -> Result<FeatureCollection, GpError> {
-    let geojson_str = serde_json::to_string(input)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid JSON: {e}")))?;
-
-    let gj: geojson::GeoJson = geojson_str
-        .parse()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid GeoJSON: {e}")))?;
-
-    let fc = match gj {
-        geojson::GeoJson::FeatureCollection(fc) => fc,
-        geojson::GeoJson::Feature(f) => geojson::FeatureCollection {
-            bbox: None,
-            features: vec![f],
-            foreign_members: None,
-        },
+    match input.get("type").and_then(|t| t.as_str()) {
+        Some("FeatureCollection") | Some("Feature") => {}
         _ => {
             return Err((
                 StatusCode::BAD_REQUEST,
                 "Expected FeatureCollection or Feature".into(),
             ));
         }
-    };
+    }
 
-    let features: Vec<Feature> = fc
+    let geojson_str = serde_json::to_string(input)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid JSON: {e}")))?;
+
+    let parsed = geojson::read_geojson(&geojson_str)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid GeoJSON: {e}")))?;
+
+    let features: Vec<Feature> = parsed
         .features
         .into_iter()
         .filter_map(|f| {
-            let geom = f.geometry?.try_into().ok()?;
-            let props = f
-                .properties
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(k, v)| {
-                    let val = match v {
-                        serde_json::Value::Null => Value::Null,
-                        serde_json::Value::Bool(b) => Value::Bool(b),
-                        serde_json::Value::Number(n) => {
-                            if let Some(i) = n.as_i64() {
-                                Value::Integer(i)
-                            } else {
-                                Value::Float(n.as_f64().unwrap_or(0.0))
-                            }
-                        }
-                        serde_json::Value::String(s) => Value::String(s),
-                        other => Value::String(other.to_string()),
-                    };
-                    (k, val)
-                })
-                .collect();
             Some(Feature {
-                geometry: geom,
-                properties: props,
+                geometry: f.geometry?,
+                properties: f
+                    .properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), json_to_value(v)))
+                    .collect(),
             })
         })
         .collect();
@@ -128,14 +105,27 @@ fn parse_input(input: &serde_json::Value) -> Result<FeatureCollection, GpError> 
     Ok(FeatureCollection::new(features, None))
 }
 
+fn json_to_value(v: &serde_json::Value) -> Value {
+    match v {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => match n.as_i64() {
+            Some(i) => Value::Integer(i),
+            None => Value::Float(n.as_f64().unwrap_or(0.0)),
+        },
+        serde_json::Value::String(s) => Value::String(s.clone()),
+        other => Value::String(other.to_string()),
+    }
+}
+
 /// Convert internal features back to GeoJSON Value.
 fn features_to_geojson(fc: &FeatureCollection) -> serde_json::Value {
     let features: Vec<geojson::Feature> = fc
         .features
         .iter()
-        .map(|f| {
-            let geom: geojson::Geometry = (&f.geometry).into();
-            let props: serde_json::Map<String, serde_json::Value> = f
+        .map(|f| geojson::Feature {
+            geometry: Some(f.geometry.clone()),
+            properties: f
                 .properties
                 .iter()
                 .map(|(k, v)| {
@@ -148,23 +138,12 @@ fn features_to_geojson(fc: &FeatureCollection) -> serde_json::Value {
                     };
                     (k.clone(), jv)
                 })
-                .collect();
-            geojson::Feature {
-                bbox: None,
-                geometry: Some(geom),
-                id: None,
-                properties: Some(props),
-                foreign_members: None,
-            }
+                .collect(),
         })
         .collect();
 
-    let fc_out = geojson::FeatureCollection {
-        bbox: None,
-        features,
-        foreign_members: None,
-    };
-    serde_json::to_value(fc_out).unwrap_or_default()
+    let out = geojson::write_geojson(&geojson::FeatureCollection { features });
+    serde_json::from_str(&out).unwrap_or_default()
 }
 
 async fn buffer_tool(Json(req): Json<GpRequest>) -> Result<Json<GpResponse>, GpError> {

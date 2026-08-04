@@ -1,12 +1,12 @@
 //! GeoJSON reader/writer.
 
+use std::collections::HashMap;
 use std::fs;
 
-use geo::Geometry;
 use geodukt_core::feature::{Feature, FeatureCollection, Value};
 use geodukt_core::manifest::{Sink, Source};
 use geodukt_core::pipeline::{PipelineError, SinkWriter, SourceReader};
-use geojson::GeoJson;
+use topoi_core::geojson;
 
 /// GeoJSON source reader.
 pub struct GeoJsonReader;
@@ -19,31 +19,25 @@ impl SourceReader for GeoJsonReader {
             message: e.to_string(),
         })?;
 
-        let geojson: GeoJson = content.parse().map_err(|e| PipelineError::Source {
+        let parsed = geojson::read_geojson(&content).map_err(|e| PipelineError::Source {
             name: path.to_string(),
             message: format!("invalid GeoJSON: {e}"),
         })?;
 
-        let features = match geojson {
-            GeoJson::FeatureCollection(fc) => fc
-                .features
-                .into_iter()
-                .filter_map(|f| {
-                    let geom: Geometry<f64> = f.geometry?.try_into().ok()?;
-                    let props = f
+        let features = parsed
+            .features
+            .into_iter()
+            .filter_map(|f| {
+                Some(Feature {
+                    geometry: f.geometry?,
+                    properties: f
                         .properties
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|(k, v)| (k, json_to_value(&v)))
-                        .collect();
-                    Some(Feature {
-                        geometry: geom,
-                        properties: props,
-                    })
+                        .iter()
+                        .map(|(k, v)| (k.clone(), json_to_value(v)))
+                        .collect(),
                 })
-                .collect(),
-            _ => Vec::new(),
-        };
+            })
+            .collect();
 
         Ok(FeatureCollection::new(features, Some("EPSG:4326".into())))
     }
@@ -58,26 +52,17 @@ impl SinkWriter for GeoJsonWriter {
         let features: Vec<geojson::Feature> = data
             .features
             .iter()
-            .map(|f| {
-                let geom: geojson::Geometry = (&f.geometry).into();
-                let props: serde_json::Map<String, serde_json::Value> = f
+            .map(|f| geojson::Feature {
+                geometry: Some(f.geometry.clone()),
+                properties: f
                     .properties
                     .iter()
                     .map(|(k, v)| (k.clone(), value_to_json(v)))
-                    .collect();
-                geojson::Feature {
-                    geometry: Some(geom),
-                    properties: Some(props),
-                    ..Default::default()
-                }
+                    .collect::<HashMap<_, _>>(),
             })
             .collect();
 
-        let fc = geojson::FeatureCollection {
-            features,
-            bbox: None,
-            foreign_members: None,
-        };
+        let fc = geojson::FeatureCollection { features };
 
         crate::formats::create_parent_dir(std::path::Path::new(path)).map_err(|e| {
             PipelineError::Sink {
@@ -86,7 +71,7 @@ impl SinkWriter for GeoJsonWriter {
             }
         })?;
 
-        fs::write(path, fc.to_string()).map_err(|e| PipelineError::Sink {
+        fs::write(path, geojson::write_geojson(&fc)).map_err(|e| PipelineError::Sink {
             name: path.to_string(),
             message: e.to_string(),
         })?;

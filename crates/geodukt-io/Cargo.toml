@@ -6,14 +6,11 @@ license.workspace = true
 
 [dependencies]
 geodukt-core = { path = "../geodukt-core" }
-geo = "0.33"
-geojson = "1.0"
+topoi-core = { git = "https://github.com/GeoLang/topoi.git", branch = "master" }
 csv = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-flatgeobuf = "6"
-geoparquet = { package = "parquet", version = "54", optional = true }
 shapefile = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }
 object_store = { version = "0.11", features = ["aws", "gcp", "azure"] }
@@ -21,11 +18,9 @@ tokio = { version = "1", features = ["rt"] }
 bytes = "1"
 futures = "0.3"
 crs-definitions = { version = "0.5", default-features = false, features = ["wkt"] }
-geozero = { version = "0.15", default-features = false, features = ["with-geo", "with-wkb"] }
 
 [features]
 default = []
-parquet = ["geoparquet"]
 cloud = []
 
 [dev-dependencies]

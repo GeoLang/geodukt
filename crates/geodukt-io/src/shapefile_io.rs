@@ -9,6 +9,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use geodukt_core::feature::{Feature, FeatureCollection, Properties, Value};
+use geodukt_core::geometry::{
+    Coord, FeatureGeometry, LineString, MultiLineString, Point, Polygon, Ring,
+};
 use geodukt_core::pipeline::PipelineError;
 use shapefile::dbase::{FieldName, FieldValue, Record, TableWriterBuilder};
 use shapefile::record::EsriShape;
@@ -51,52 +54,45 @@ pub fn read_shapefile(path: &Path) -> Result<FeatureCollection, PipelineError> {
     Ok(FeatureCollection::new(features, None))
 }
 
-fn shape_to_geometry(shape: &shapefile::Shape) -> geo::Geometry {
+fn shape_to_geometry(shape: &shapefile::Shape) -> FeatureGeometry {
     match shape {
-        shapefile::Shape::Point(p) => geo::Geometry::Point(geo::Point::new(p.x, p.y)),
+        shapefile::Shape::Point(p) => FeatureGeometry::Point(Point::new(p.x, p.y)),
         shapefile::Shape::Polyline(pl) => {
-            let lines: Vec<geo::LineString> = pl
+            let lines: Vec<LineString> = pl
                 .parts()
                 .iter()
-                .map(|part| {
-                    geo::LineString::from(
-                        part.iter()
-                            .map(|p| geo::Coord { x: p.x, y: p.y })
-                            .collect::<Vec<_>>(),
-                    )
-                })
+                .map(|part| LineString::new(part.iter().map(|p| Coord::new(p.x, p.y)).collect()))
                 .collect();
             if lines.len() == 1 {
-                geo::Geometry::LineString(lines.into_iter().next().unwrap())
+                FeatureGeometry::LineString(lines.into_iter().next().unwrap())
             } else {
-                geo::Geometry::MultiLineString(geo::MultiLineString::new(lines))
+                FeatureGeometry::MultiLineString(MultiLineString::new(lines))
             }
         }
         shapefile::Shape::Polygon(pg) => {
             let mut exterior = None;
             let mut interiors = Vec::new();
             for ring in pg.rings() {
-                let coords: Vec<geo::Coord> = match ring {
+                let coords: Vec<Coord> = match ring {
                     shapefile::PolygonRing::Outer(pts) | shapefile::PolygonRing::Inner(pts) => {
-                        pts.iter().map(|p| geo::Coord { x: p.x, y: p.y }).collect()
+                        pts.iter().map(|p| Coord::new(p.x, p.y)).collect()
                     }
                 };
-                let ls = geo::LineString::from(coords);
+                let ring = Ring::new(coords);
                 if exterior.is_none() {
-                    exterior = Some(ls);
+                    exterior = Some(ring);
                 } else {
-                    interiors.push(ls);
+                    interiors.push(ring);
                 }
             }
-            if let Some(ext) = exterior {
-                geo::Geometry::Polygon(geo::Polygon::new(ext, interiors))
-            } else {
-                geo::Geometry::Point(geo::Point::new(0.0, 0.0))
+            match exterior {
+                Some(ext) => FeatureGeometry::Polygon(Polygon::new(ext, interiors)),
+                None => FeatureGeometry::Point(Point::new(0.0, 0.0)),
             }
         }
-        shapefile::Shape::PointM(p) => geo::Geometry::Point(geo::Point::new(p.x, p.y)),
-        shapefile::Shape::PointZ(p) => geo::Geometry::Point(geo::Point::new(p.x, p.y)),
-        _ => geo::Geometry::Point(geo::Point::new(0.0, 0.0)),
+        shapefile::Shape::PointM(p) => FeatureGeometry::Point(Point::new(p.x, p.y)),
+        shapefile::Shape::PointZ(p) => FeatureGeometry::Point(Point::new(p.x, p.y)),
+        _ => FeatureGeometry::Point(Point::new(0.0, 0.0)),
     }
 }
 
@@ -165,17 +161,19 @@ impl ShapeKind {
         }
     }
 
-    fn of(geom: &geo::Geometry) -> Result<Self, PipelineError> {
+    fn of(geom: &FeatureGeometry) -> Result<Self, PipelineError> {
         match geom {
-            geo::Geometry::Point(_) => Ok(ShapeKind::Point),
-            geo::Geometry::MultiPoint(_) => Ok(ShapeKind::Multipoint),
+            FeatureGeometry::Point(_) => Ok(ShapeKind::Point),
+            FeatureGeometry::MultiPoint(_) => Ok(ShapeKind::Multipoint),
             // shapefile PolyLine and Polygon are multi-part, so the single and
-            // multi geo variants land in the same file
-            geo::Geometry::Line(_) | geo::Geometry::LineString(_) => Ok(ShapeKind::Polyline),
-            geo::Geometry::MultiLineString(_) => Ok(ShapeKind::Polyline),
-            geo::Geometry::Polygon(_) | geo::Geometry::MultiPolygon(_) => Ok(ShapeKind::Polygon),
-            geo::Geometry::Rect(_) | geo::Geometry::Triangle(_) => Ok(ShapeKind::Polygon),
-            geo::Geometry::GeometryCollection(_) => {
+            // multi variants land in the same file
+            FeatureGeometry::LineString(_) | FeatureGeometry::MultiLineString(_) => {
+                Ok(ShapeKind::Polyline)
+            }
+            FeatureGeometry::Polygon(_) | FeatureGeometry::MultiPolygon(_) => {
+                Ok(ShapeKind::Polygon)
+            }
+            FeatureGeometry::GeometryCollection(_) => {
                 Err(sink_err("a shapefile cannot hold a GeometryCollection"))
             }
         }
@@ -197,39 +195,43 @@ fn single_shape_kind(fc: &FeatureCollection) -> Result<ShapeKind, PipelineError>
     Ok(kind)
 }
 
-fn coords(ls: &geo::LineString) -> Vec<shapefile::Point> {
-    ls.0.iter()
+fn shape_points(coords: &[Coord]) -> Vec<shapefile::Point> {
+    coords
+        .iter()
         .map(|c| shapefile::Point::new(c.x, c.y))
         .collect()
 }
 
-fn to_point(geom: &geo::Geometry) -> Result<shapefile::Point, PipelineError> {
+fn to_point(geom: &FeatureGeometry) -> Result<shapefile::Point, PipelineError> {
     match geom {
-        geo::Geometry::Point(p) => Ok(shapefile::Point::new(p.x(), p.y())),
+        FeatureGeometry::Point(p) => Ok(shapefile::Point::new(p.0.x, p.0.y)),
         _ => Err(sink_err("expected a Point")),
     }
 }
 
-fn to_multipoint(geom: &geo::Geometry) -> Result<shapefile::Multipoint, PipelineError> {
+fn to_multipoint(geom: &FeatureGeometry) -> Result<shapefile::Multipoint, PipelineError> {
     match geom {
-        geo::Geometry::MultiPoint(mp) if !mp.0.is_empty() => Ok(shapefile::Multipoint::new(
-            mp.0.iter()
-                .map(|p| shapefile::Point::new(p.x(), p.y()))
-                .collect(),
-        )),
-        geo::Geometry::MultiPoint(_) => Err(sink_err("cannot write an empty MultiPoint")),
+        FeatureGeometry::MultiPoint(mp) if !mp.points().is_empty() => {
+            Ok(shapefile::Multipoint::new(
+                mp.points()
+                    .iter()
+                    .map(|p| shapefile::Point::new(p.0.x, p.0.y))
+                    .collect(),
+            ))
+        }
+        FeatureGeometry::MultiPoint(_) => Err(sink_err("cannot write an empty MultiPoint")),
         _ => Err(sink_err("expected a MultiPoint")),
     }
 }
 
-fn to_polyline(geom: &geo::Geometry) -> Result<shapefile::Polyline, PipelineError> {
+fn to_polyline(geom: &FeatureGeometry) -> Result<shapefile::Polyline, PipelineError> {
     let parts: Vec<Vec<shapefile::Point>> = match geom {
-        geo::Geometry::Line(l) => vec![vec![
-            shapefile::Point::new(l.start.x, l.start.y),
-            shapefile::Point::new(l.end.x, l.end.y),
-        ]],
-        geo::Geometry::LineString(ls) => vec![coords(ls)],
-        geo::Geometry::MultiLineString(mls) => mls.0.iter().map(coords).collect(),
+        FeatureGeometry::LineString(ls) => vec![shape_points(ls.coords())],
+        FeatureGeometry::MultiLineString(mls) => mls
+            .linestrings()
+            .iter()
+            .map(|ls| shape_points(ls.coords()))
+            .collect(),
         _ => return Err(sink_err("expected a LineString or MultiLineString")),
     };
 
@@ -241,17 +243,15 @@ fn to_polyline(geom: &geo::Geometry) -> Result<shapefile::Polyline, PipelineErro
     Ok(shapefile::Polyline::with_parts(parts))
 }
 
-fn to_polygon(geom: &geo::Geometry) -> Result<shapefile::Polygon, PipelineError> {
+fn to_polygon(geom: &FeatureGeometry) -> Result<shapefile::Polygon, PipelineError> {
     let mut rings = Vec::new();
     match geom {
-        geo::Geometry::Polygon(p) => push_polygon_rings(p, &mut rings),
-        geo::Geometry::MultiPolygon(mp) => {
-            for p in &mp.0 {
+        FeatureGeometry::Polygon(p) => push_polygon_rings(p, &mut rings),
+        FeatureGeometry::MultiPolygon(mp) => {
+            for p in mp.polygons() {
                 push_polygon_rings(p, &mut rings);
             }
         }
-        geo::Geometry::Rect(r) => push_polygon_rings(&r.to_polygon(), &mut rings),
-        geo::Geometry::Triangle(t) => push_polygon_rings(&t.to_polygon(), &mut rings),
         _ => return Err(sink_err("expected a Polygon or MultiPolygon")),
     }
 
@@ -266,13 +266,12 @@ fn to_polygon(geom: &geo::Geometry) -> Result<shapefile::Polygon, PipelineError>
     Ok(shapefile::Polygon::with_rings(rings))
 }
 
-fn push_polygon_rings(
-    poly: &geo::Polygon,
-    rings: &mut Vec<shapefile::PolygonRing<shapefile::Point>>,
-) {
-    rings.push(shapefile::PolygonRing::Outer(coords(poly.exterior())));
+fn push_polygon_rings(poly: &Polygon, rings: &mut Vec<shapefile::PolygonRing<shapefile::Point>>) {
+    rings.push(shapefile::PolygonRing::Outer(shape_points(
+        poly.exterior().coords(),
+    )));
     for hole in poly.interiors() {
-        rings.push(shapefile::PolygonRing::Inner(coords(hole)));
+        rings.push(shapefile::PolygonRing::Inner(shape_points(hole.coords())));
     }
 }
 
@@ -444,7 +443,7 @@ fn write_shapes<S, F>(
 ) -> Result<(), PipelineError>
 where
     S: EsriShape,
-    F: Fn(&geo::Geometry) -> Result<S, PipelineError>,
+    F: Fn(&FeatureGeometry) -> Result<S, PipelineError>,
 {
     let mut writer = shapefile::Writer::from_path(path, builder)
         .map_err(|e| sink_err(format!("failed to create {}: {e}", path.display())))?;
@@ -480,8 +479,9 @@ fn epsg_code(crs: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use geodukt_core::geometry::MultiPolygon;
 
-    fn feature(geometry: geo::Geometry, props: &[(&str, Value)]) -> Feature {
+    fn feature(geometry: FeatureGeometry, props: &[(&str, Value)]) -> Feature {
         Feature {
             geometry,
             properties: props
@@ -491,15 +491,17 @@ mod tests {
         }
     }
 
-    fn point(x: f64, y: f64) -> geo::Geometry {
-        geo::Geometry::Point(geo::Point::new(x, y))
+    fn point(x: f64, y: f64) -> FeatureGeometry {
+        FeatureGeometry::Point(Point::new(x, y))
     }
 
-    fn square() -> geo::Geometry {
-        geo::Geometry::Polygon(geo::Polygon::new(
-            geo::LineString::from(vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]),
-            vec![],
-        ))
+    fn square() -> FeatureGeometry {
+        FeatureGeometry::Polygon(Polygon::from_coords(&[
+            Coord::new(0.0, 0.0),
+            Coord::new(1.0, 0.0),
+            Coord::new(1.0, 1.0),
+            Coord::new(0.0, 1.0),
+        ]))
     }
 
     fn write_to_temp(fc: &FeatureCollection) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -539,7 +541,10 @@ mod tests {
         let back = read_shapefile(&path).unwrap();
 
         assert_eq!(back.len(), 2);
-        assert_eq!(back.features[0].geometry, point(1.0, 2.0));
+        assert!(geodukt_core::geometry::equals(
+            &back.features[0].geometry,
+            &point(1.0, 2.0)
+        ));
         assert_eq!(
             back.features[0].properties.get("name"),
             Some(&Value::String("park".into()))
@@ -588,14 +593,14 @@ mod tests {
         assert_eq!(back.len(), 1);
         assert!(matches!(
             back.features[0].geometry,
-            geo::Geometry::Polygon(_)
+            FeatureGeometry::Polygon(_)
         ));
     }
 
     #[test]
     fn test_polygon_and_multipolygon_share_one_file() {
-        let multi = geo::Geometry::MultiPolygon(geo::MultiPolygon::new(vec![match square() {
-            geo::Geometry::Polygon(p) => p,
+        let multi = FeatureGeometry::MultiPolygon(MultiPolygon::new(vec![match square() {
+            FeatureGeometry::Polygon(p) => p,
             _ => unreachable!(),
         }]));
         let fc = FeatureCollection::new(
@@ -671,9 +676,7 @@ mod tests {
     fn test_geometry_collection_rejected() {
         let fc = FeatureCollection::new(
             vec![feature(
-                geo::Geometry::GeometryCollection(geo::GeometryCollection::new_from(vec![point(
-                    0.0, 0.0,
-                )])),
+                FeatureGeometry::GeometryCollection(vec![point(0.0, 0.0)]),
                 &[("id", Value::Integer(1))],
             )],
             None,
@@ -687,7 +690,7 @@ mod tests {
     fn test_degenerate_linestring_rejected() {
         let fc = FeatureCollection::new(
             vec![feature(
-                geo::Geometry::LineString(geo::LineString::from(vec![(0.0, 0.0)])),
+                FeatureGeometry::LineString(LineString::new(vec![Coord::new(0.0, 0.0)])),
                 &[("id", Value::Integer(1))],
             )],
             None,

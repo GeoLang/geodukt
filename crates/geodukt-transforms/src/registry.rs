@@ -17,7 +17,6 @@ use crate::clip::ClipTransform;
 use crate::dissolve::DissolveTransform;
 use crate::expression::ExpressionTransform;
 use crate::filter::FilterTransform;
-#[cfg(feature = "reproject")]
 use crate::reproject::ReprojectTransform;
 use crate::schema::SchemaMapTransform;
 use crate::simplify::SimplifyTransform;
@@ -254,7 +253,6 @@ const FILTER: OperationSpec = OperationSpec {
     build: || Box::new(FilterTransform),
 };
 
-#[cfg(feature = "reproject")]
 const REPROJECT: OperationSpec = OperationSpec {
     name: "reproject",
     description: "Transform coordinates between coordinate reference systems",
@@ -354,12 +352,11 @@ pub fn operations() -> Vec<OperationSpec> {
         DISSOLVE,
         EXPRESSION,
         FILTER,
+        REPROJECT,
         SCHEMA_MAP,
         SIMPLIFY,
         SPATIAL_JOIN,
     ];
-    #[cfg(feature = "reproject")]
-    ops.push(REPROJECT);
     ops.sort_by_key(|op| op.name);
     ops
 }
@@ -418,6 +415,7 @@ mod tests {
             "dissolve",
             "expression",
             "filter",
+            "reproject",
             "schema_map",
             "simplify",
             "spatial_join",
@@ -425,13 +423,6 @@ mod tests {
             assert!(reg.contains_key(name), "'{name}' is not registered");
         }
         assert_eq!(reg.len(), operations().len());
-    }
-
-    /// reproject needs proj, so it is only registered with the feature on.
-    #[test]
-    fn test_reproject_tracks_its_feature() {
-        let registered = default_registry().contains_key("reproject");
-        assert_eq!(registered, cfg!(feature = "reproject"));
     }
 
     #[test]

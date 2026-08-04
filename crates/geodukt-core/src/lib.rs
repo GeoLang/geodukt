@@ -6,6 +6,7 @@ pub mod cache;
 pub mod cdc;
 pub mod dag;
 pub mod feature;
+pub mod geometry;
 pub mod incremental;
 pub mod lineage;
 pub mod manifest;

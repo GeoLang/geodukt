@@ -223,13 +223,13 @@ impl ExecutionReport {
 mod tests {
     use super::*;
     use crate::feature::{Feature, FeatureCollection, Value};
-    use geo::point;
+    use crate::geometry::{FeatureGeometry, Point};
 
     struct MockReader;
     impl SourceReader for MockReader {
         fn read_source(&self, _source: &Source) -> Result<FeatureCollection, PipelineError> {
             let features = vec![Feature {
-                geometry: geo::Geometry::Point(point!(x: 1.0, y: 2.0)),
+                geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
                 properties: HashMap::from([("id".into(), Value::Integer(1))]),
             }];
             Ok(FeatureCollection::new(features, Some("EPSG:4326".into())))

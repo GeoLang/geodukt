@@ -2,16 +2,17 @@
 
 use std::collections::HashMap;
 
-use geo::{BooleanOps, Geometry, MultiPolygon, Polygon};
 use geodukt_core::feature::{Feature, FeatureCollection};
+use geodukt_core::geometry::{Coord, FeatureGeometry, MultiPolygon, Polygon, Ring};
 use geodukt_core::pipeline::{PipelineError, TransformOp};
+use topoi_core::intersection;
 
 /// Clip operation: intersects feature geometries with a clip boundary.
 /// Requires a secondary input specified by `clip_to` param (resolved by pipeline).
 #[derive(Default)]
 pub struct ClipTransform {
     /// The clip boundary loaded from the secondary input.
-    pub clip_boundary: Option<MultiPolygon<f64>>,
+    pub clip_boundary: Option<MultiPolygon>,
 }
 
 impl ClipTransform {
@@ -19,7 +20,7 @@ impl ClipTransform {
         Self::default()
     }
 
-    pub fn with_boundary(boundary: MultiPolygon<f64>) -> Self {
+    pub fn with_boundary(boundary: MultiPolygon) -> Self {
         Self {
             clip_boundary: Some(boundary),
         }
@@ -43,16 +44,16 @@ impl TransformOp for ClipTransform {
             let max_y = crate::params::float(params, "clip", "max_y")?;
 
             let poly = Polygon::new(
-                geo::LineString::from(vec![
-                    (min_x, min_y),
-                    (max_x, min_y),
-                    (max_x, max_y),
-                    (min_x, max_y),
-                    (min_x, min_y),
+                Ring::new(vec![
+                    Coord::new(min_x, min_y),
+                    Coord::new(max_x, min_y),
+                    Coord::new(max_x, max_y),
+                    Coord::new(min_x, max_y),
+                    Coord::new(min_x, min_y),
                 ]),
                 vec![],
             );
-            MultiPolygon(vec![poly])
+            MultiPolygon::new(vec![poly])
         };
 
         let features: Vec<Feature> = input
@@ -71,28 +72,26 @@ impl TransformOp for ClipTransform {
     }
 }
 
-fn clip_geometry(geom: &Geometry<f64>, clip: &MultiPolygon<f64>) -> Option<Geometry<f64>> {
+fn clip_geometry(geom: &FeatureGeometry, clip: &MultiPolygon) -> Option<FeatureGeometry> {
+    let boundary = clip.polygons().first()?;
     match geom {
-        Geometry::Polygon(poly) => {
-            let result = poly.intersection(&clip.0[0]);
-            if result.0.is_empty() {
-                None
-            } else if result.0.len() == 1 {
-                Some(Geometry::Polygon(result.0[0].clone()))
-            } else {
-                Some(Geometry::MultiPolygon(result))
+        FeatureGeometry::Polygon(poly) => {
+            let result = intersection(poly, boundary);
+            match result.polygons() {
+                [] => None,
+                [single] => Some(FeatureGeometry::Polygon(single.clone())),
+                _ => Some(FeatureGeometry::MultiPolygon(result)),
             }
         }
-        Geometry::MultiPolygon(mp) => {
+        FeatureGeometry::MultiPolygon(mp) => {
             let mut polys = Vec::new();
-            for poly in &mp.0 {
-                let result = poly.intersection(&clip.0[0]);
-                polys.extend(result.0);
+            for poly in mp.polygons() {
+                polys.extend(intersection(poly, boundary).polygons().iter().cloned());
             }
             if polys.is_empty() {
                 None
             } else {
-                Some(Geometry::MultiPolygon(MultiPolygon(polys)))
+                Some(FeatureGeometry::MultiPolygon(MultiPolygon::new(polys)))
             }
         }
         // For points/lines, check containment via bounding box (simplified)
@@ -103,19 +102,21 @@ fn clip_geometry(geom: &Geometry<f64>, clip: &MultiPolygon<f64>) -> Option<Geome
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo::polygon;
 
     #[test]
     fn test_clip_polygon() {
-        let poly = polygon![
-            (x: -1.0, y: -1.0),
-            (x: 2.0, y: -1.0),
-            (x: 2.0, y: 2.0),
-            (x: -1.0, y: 2.0),
-            (x: -1.0, y: -1.0),
-        ];
+        let poly = Polygon::new(
+            Ring::new(vec![
+                Coord::new(-1.0, -1.0),
+                Coord::new(2.0, -1.0),
+                Coord::new(2.0, 2.0),
+                Coord::new(-1.0, 2.0),
+                Coord::new(-1.0, -1.0),
+            ]),
+            vec![],
+        );
         let features = vec![Feature {
-            geometry: Geometry::Polygon(poly),
+            geometry: FeatureGeometry::Polygon(poly),
             properties: HashMap::new(),
         }];
         let fc = FeatureCollection::new(features, None);

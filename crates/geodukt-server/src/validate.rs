@@ -579,13 +579,10 @@ input = "src"
     #[test]
     fn test_optional_parameters_stay_optional() {
         assert!(validate_manifest(&manifest_with("operation = \"dissolve\"")).is_ok());
-        if operation("reproject").is_some() {
-            let manifest = manifest_with("operation = \"reproject\"\nto_crs = \"EPSG:3857\"");
-            assert!(validate_manifest(&manifest).is_ok());
-            let problem =
-                validate_manifest(&manifest_with("operation = \"reproject\"")).unwrap_err();
-            assert!(problem.message.contains("to_crs"), "{}", problem.message);
-        }
+        let manifest = manifest_with("operation = \"reproject\"\nto_crs = \"EPSG:3857\"");
+        assert!(validate_manifest(&manifest).is_ok());
+        let problem = validate_manifest(&manifest_with("operation = \"reproject\"")).unwrap_err();
+        assert!(problem.message.contains("to_crs"), "{}", problem.message);
     }
 
     #[test]

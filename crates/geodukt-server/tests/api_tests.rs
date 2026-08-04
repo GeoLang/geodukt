@@ -332,14 +332,11 @@ async fn test_operations_catalog_reports_required_parameters() {
     );
 }
 
-/// reproject is only in the table when the transforms crate is built with proj.
 #[tokio::test]
 async fn test_operations_catalog_requires_the_target_crs() {
     let (_, catalog) = get("/operations").await;
     let ops = catalog["operations"].as_array().unwrap();
-    let Some(reproject) = ops.iter().find(|op| op["name"] == "reproject") else {
-        return;
-    };
+    let reproject = ops.iter().find(|op| op["name"] == "reproject").unwrap();
     let to_crs = reproject["parameters"]
         .as_array()
         .unwrap()

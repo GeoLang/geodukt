@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use geo::{Area, Geometry, Length};
 use geodukt_core::feature::{Feature, FeatureCollection, Value};
+use geodukt_core::geometry::FeatureGeometry;
 use geodukt_core::pipeline::{PipelineError, TransformOp};
 
 /// Expression operation: adds computed columns based on geometry or property expressions.
@@ -45,7 +45,7 @@ impl TransformOp for ExpressionTransform {
 /// Simple expression evaluator supporting built-in functions.
 fn evaluate_expression(
     expr: &str,
-    geometry: &Geometry<f64>,
+    geometry: &FeatureGeometry,
     properties: &HashMap<String, Value>,
 ) -> Value {
     let expr = expr.trim();
@@ -54,22 +54,16 @@ fn evaluate_expression(
     match expr {
         "$area" => {
             let area = match geometry {
-                Geometry::Polygon(p) => p.unsigned_area(),
-                Geometry::MultiPolygon(mp) => mp.unsigned_area(),
+                FeatureGeometry::Polygon(p) => p.area(),
+                FeatureGeometry::MultiPolygon(mp) => mp.area(),
                 _ => 0.0,
             };
             Value::Float(area)
         }
         "$length" => {
             let length = match geometry {
-                Geometry::LineString(ls) => {
-                    geo::algorithm::line_measures::metric_spaces::Euclidean.length(ls)
-                }
-                Geometry::MultiLineString(mls) => mls
-                    .0
-                    .iter()
-                    .map(|ls| geo::algorithm::line_measures::metric_spaces::Euclidean.length(ls))
-                    .sum(),
+                FeatureGeometry::LineString(ls) => ls.length(),
+                FeatureGeometry::MultiLineString(mls) => mls.length(),
                 _ => 0.0,
             };
             Value::Float(length)
@@ -99,37 +93,35 @@ fn evaluate_expression(
     }
 }
 
-fn count_vertices(geom: &Geometry<f64>) -> i64 {
+fn count_vertices(geom: &FeatureGeometry) -> i64 {
     match geom {
-        Geometry::Point(_) => 1,
-        Geometry::LineString(ls) => ls.0.len() as i64,
-        Geometry::Polygon(p) => {
-            p.exterior().0.len() as i64
-                + p.interiors().iter().map(|r| r.0.len() as i64).sum::<i64>()
-        }
-        Geometry::MultiPoint(mp) => mp.0.len() as i64,
-        Geometry::MultiLineString(mls) => mls.0.iter().map(|ls| ls.0.len() as i64).sum(),
-        Geometry::MultiPolygon(mp) => {
-            mp.0.iter()
-                .map(|p| {
-                    p.exterior().0.len() as i64
-                        + p.interiors().iter().map(|r| r.0.len() as i64).sum::<i64>()
-                })
-                .sum()
-        }
-        _ => 0,
+        FeatureGeometry::Point(_) => 1,
+        FeatureGeometry::LineString(ls) => ls.coords().len() as i64,
+        FeatureGeometry::Polygon(p) => polygon_vertices(p),
+        FeatureGeometry::MultiPoint(mp) => mp.points().len() as i64,
+        FeatureGeometry::MultiLineString(mls) => mls
+            .linestrings()
+            .iter()
+            .map(|ls| ls.coords().len() as i64)
+            .sum(),
+        FeatureGeometry::MultiPolygon(mp) => mp.polygons().iter().map(polygon_vertices).sum(),
+        FeatureGeometry::GeometryCollection(_) => 0,
     }
 }
 
-fn geometry_type_name(geom: &Geometry<f64>) -> &'static str {
+fn polygon_vertices(poly: &geodukt_core::geometry::Polygon) -> i64 {
+    poly.exterior().coords().len() as i64
+        + poly
+            .interiors()
+            .iter()
+            .map(|r| r.coords().len() as i64)
+            .sum::<i64>()
+}
+
+fn geometry_type_name(geom: &FeatureGeometry) -> &'static str {
     match geom {
-        Geometry::Point(_) => "Point",
-        Geometry::LineString(_) => "LineString",
-        Geometry::Polygon(_) => "Polygon",
-        Geometry::MultiPoint(_) => "MultiPoint",
-        Geometry::MultiLineString(_) => "MultiLineString",
-        Geometry::MultiPolygon(_) => "MultiPolygon",
-        _ => "Unknown",
+        FeatureGeometry::GeometryCollection(_) => "Unknown",
+        other => geodukt_core::geometry::type_name(other),
     }
 }
 
@@ -163,19 +155,22 @@ fn apply_op(value: f64, op: char, operand: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo::polygon;
+    use geodukt_core::geometry::{Coord, Point, Polygon, Ring};
 
     #[test]
     fn test_expression_area() {
-        let poly = polygon![
-            (x: 0.0, y: 0.0),
-            (x: 2.0, y: 0.0),
-            (x: 2.0, y: 3.0),
-            (x: 0.0, y: 3.0),
-            (x: 0.0, y: 0.0),
-        ];
+        let poly = Polygon::new(
+            Ring::new(vec![
+                Coord::new(0.0, 0.0),
+                Coord::new(2.0, 0.0),
+                Coord::new(2.0, 3.0),
+                Coord::new(0.0, 3.0),
+                Coord::new(0.0, 0.0),
+            ]),
+            vec![],
+        );
         let features = vec![Feature {
-            geometry: Geometry::Polygon(poly),
+            geometry: FeatureGeometry::Polygon(poly),
             properties: HashMap::new(),
         }];
         let fc = FeatureCollection::new(features, None);
@@ -200,7 +195,7 @@ mod tests {
     #[test]
     fn test_expression_arithmetic() {
         let features = vec![Feature {
-            geometry: Geometry::Point(geo::point!(x: 0.0, y: 0.0)),
+            geometry: FeatureGeometry::Point(Point::new(0.0, 0.0)),
             properties: HashMap::from([("population".into(), Value::Integer(1000))]),
         }];
         let fc = FeatureCollection::new(features, None);

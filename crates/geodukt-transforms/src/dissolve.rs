@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 
-use geo::{BooleanOps, Geometry, MultiPolygon, Polygon};
 use geodukt_core::feature::{Feature, FeatureCollection, Value};
+use geodukt_core::geometry::{FeatureGeometry, MultiPolygon, Polygon};
 use geodukt_core::pipeline::{PipelineError, TransformOp};
+use topoi_core::union;
 
 /// Dissolve operation: groups features by a property key and unions their geometries.
 pub struct DissolveTransform;
@@ -56,11 +57,11 @@ impl TransformOp for DissolveTransform {
     }
 }
 
-fn merge_geometries(features: &[&Feature]) -> Option<Geometry<f64>> {
-    let polys: Vec<&Polygon<f64>> = features
+fn merge_geometries(features: &[&Feature]) -> Option<FeatureGeometry> {
+    let polys: Vec<&Polygon> = features
         .iter()
         .filter_map(|f| match &f.geometry {
-            Geometry::Polygon(p) => Some(p),
+            FeatureGeometry::Polygon(p) => Some(p),
             _ => None,
         })
         .collect();
@@ -71,42 +72,57 @@ fn merge_geometries(features: &[&Feature]) -> Option<Geometry<f64>> {
     }
 
     // Union all polygons
-    let mut result = MultiPolygon(vec![polys[0].clone()]);
+    let mut result = MultiPolygon::new(vec![polys[0].clone()]);
     for poly in polys.iter().skip(1) {
-        result = result.union(&MultiPolygon(vec![(*poly).clone()]));
+        result = union(&result, &MultiPolygon::new(vec![(*poly).clone()]));
     }
 
-    if result.0.len() == 1 {
-        Some(Geometry::Polygon(result.0[0].clone()))
-    } else {
-        Some(Geometry::MultiPolygon(result))
+    match result.polygons() {
+        [single] => Some(FeatureGeometry::Polygon(single.clone())),
+        _ => Some(FeatureGeometry::MultiPolygon(result)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo::polygon;
+    use geodukt_core::geometry::{Coord, Ring};
+
+    fn square(offset: f64) -> FeatureGeometry {
+        FeatureGeometry::Polygon(Polygon::new(
+            Ring::new(vec![
+                Coord::new(offset, 0.0),
+                Coord::new(offset + 1.0, 0.0),
+                Coord::new(offset + 1.0, 1.0),
+                Coord::new(offset, 1.0),
+                Coord::new(offset, 0.0),
+            ]),
+            vec![],
+        ))
+    }
 
     #[test]
     fn test_dissolve_by_property() {
         let features = vec![
             Feature {
-                geometry: Geometry::Polygon(polygon![
-                    (x: 0.0, y: 0.0), (x: 1.0, y: 0.0), (x: 1.0, y: 1.0), (x: 0.0, y: 1.0), (x: 0.0, y: 0.0),
-                ]),
+                geometry: square(0.0),
                 properties: HashMap::from([("zone".into(), Value::String("A".into()))]),
             },
             Feature {
-                geometry: Geometry::Polygon(polygon![
-                    (x: 1.0, y: 0.0), (x: 2.0, y: 0.0), (x: 2.0, y: 1.0), (x: 1.0, y: 1.0), (x: 1.0, y: 0.0),
-                ]),
+                geometry: square(1.0),
                 properties: HashMap::from([("zone".into(), Value::String("A".into()))]),
             },
             Feature {
-                geometry: Geometry::Polygon(polygon![
-                    (x: 5.0, y: 5.0), (x: 6.0, y: 5.0), (x: 6.0, y: 6.0), (x: 5.0, y: 6.0), (x: 5.0, y: 5.0),
-                ]),
+                geometry: FeatureGeometry::Polygon(Polygon::new(
+                    Ring::new(vec![
+                        Coord::new(5.0, 5.0),
+                        Coord::new(6.0, 5.0),
+                        Coord::new(6.0, 6.0),
+                        Coord::new(5.0, 6.0),
+                        Coord::new(5.0, 5.0),
+                    ]),
+                    vec![],
+                )),
                 properties: HashMap::from([("zone".into(), Value::String("B".into()))]),
             },
         ];

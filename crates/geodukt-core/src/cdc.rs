@@ -172,11 +172,11 @@ impl CdcDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo::{Geometry, point};
+    use crate::geometry::{FeatureGeometry, Point};
 
     fn make_feature(id: i64, name: &str) -> Feature {
         Feature {
-            geometry: Geometry::Point(point!(x: 1.0, y: 2.0)),
+            geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
             properties: HashMap::from([
                 ("id".to_string(), Value::Integer(id)),
                 ("name".to_string(), Value::String(name.to_string())),

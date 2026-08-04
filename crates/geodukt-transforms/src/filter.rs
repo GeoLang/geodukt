@@ -39,17 +39,17 @@ impl TransformOp for FilterTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo::{Geometry, point};
+    use geodukt_core::geometry::{FeatureGeometry, Point};
 
     #[test]
     fn test_filter_by_string() {
         let features = vec![
             Feature {
-                geometry: Geometry::Point(point!(x: 0.0, y: 0.0)),
+                geometry: FeatureGeometry::Point(Point::new(0.0, 0.0)),
                 properties: HashMap::from([("type".into(), Value::String("road".into()))]),
             },
             Feature {
-                geometry: Geometry::Point(point!(x: 1.0, y: 1.0)),
+                geometry: FeatureGeometry::Point(Point::new(1.0, 1.0)),
                 properties: HashMap::from([("type".into(), Value::String("building".into()))]),
             },
         ];

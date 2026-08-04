@@ -2,9 +2,8 @@
 
 use std::collections::HashMap;
 
-use geo::{Area, Geometry};
-
 use crate::feature::{FeatureCollection, Value};
+use crate::geometry::FeatureGeometry;
 
 /// A quality rule that can be applied to a feature collection.
 #[derive(Debug, Clone)]
@@ -147,8 +146,8 @@ fn apply_rule(fc: &FeatureCollection, rule: &QualityRule) -> QualityResult {
             let mut failing = Vec::new();
             for (i, f) in fc.features.iter().enumerate() {
                 let area = match &f.geometry {
-                    Geometry::Polygon(p) => p.unsigned_area(),
-                    Geometry::MultiPolygon(mp) => mp.unsigned_area(),
+                    FeatureGeometry::Polygon(p) => p.area(),
+                    FeatureGeometry::MultiPolygon(mp) => mp.area(),
                     _ => 0.0,
                 };
                 if area < *threshold {
@@ -193,27 +192,24 @@ fn apply_rule(fc: &FeatureCollection, rule: &QualityRule) -> QualityResult {
     }
 }
 
-fn is_geometry_valid(geom: &Geometry<f64>) -> bool {
+fn is_geometry_valid(geom: &FeatureGeometry) -> bool {
     match geom {
-        Geometry::Polygon(p) => p.unsigned_area() > 0.0 && p.exterior().0.len() >= 4,
-        Geometry::LineString(ls) => ls.0.len() >= 2,
-        Geometry::Point(_) => true,
-        Geometry::MultiPolygon(mp) => mp.0.iter().all(|p| p.unsigned_area() > 0.0),
-        Geometry::MultiLineString(mls) => mls.0.iter().all(|ls| ls.0.len() >= 2),
-        Geometry::MultiPoint(mp) => !mp.0.is_empty(),
-        _ => true,
+        FeatureGeometry::Polygon(p) => p.area() > 0.0 && p.exterior().coords().len() >= 4,
+        FeatureGeometry::LineString(ls) => ls.coords().len() >= 2,
+        FeatureGeometry::Point(_) => true,
+        FeatureGeometry::MultiPolygon(mp) => mp.polygons().iter().all(|p| p.area() > 0.0),
+        FeatureGeometry::MultiLineString(mls) => {
+            mls.linestrings().iter().all(|ls| ls.coords().len() >= 2)
+        }
+        FeatureGeometry::MultiPoint(mp) => !mp.points().is_empty(),
+        FeatureGeometry::GeometryCollection(_) => true,
     }
 }
 
-fn geometry_type_name(geom: &Geometry<f64>) -> &'static str {
+fn geometry_type_name(geom: &FeatureGeometry) -> &'static str {
     match geom {
-        Geometry::Point(_) => "Point",
-        Geometry::LineString(_) => "LineString",
-        Geometry::Polygon(_) => "Polygon",
-        Geometry::MultiPoint(_) => "MultiPoint",
-        Geometry::MultiLineString(_) => "MultiLineString",
-        Geometry::MultiPolygon(_) => "MultiPolygon",
-        _ => "Unknown",
+        FeatureGeometry::GeometryCollection(_) => "Unknown",
+        other => crate::geometry::type_name(other),
     }
 }
 
@@ -221,19 +217,26 @@ fn geometry_type_name(geom: &Geometry<f64>) -> &'static str {
 mod tests {
     use super::*;
     use crate::feature::Feature;
-    use geo::{point, polygon};
+    use crate::geometry::{Coord, Point, Polygon, Ring};
 
     #[test]
     fn test_quality_rules() {
         let features = vec![
             Feature {
-                geometry: Geometry::Polygon(polygon![
-                    (x: 0.0, y: 0.0), (x: 1.0, y: 0.0), (x: 1.0, y: 1.0), (x: 0.0, y: 1.0), (x: 0.0, y: 0.0),
-                ]),
+                geometry: FeatureGeometry::Polygon(Polygon::new(
+                    Ring::new(vec![
+                        Coord::new(0.0, 0.0),
+                        Coord::new(1.0, 0.0),
+                        Coord::new(1.0, 1.0),
+                        Coord::new(0.0, 1.0),
+                        Coord::new(0.0, 0.0),
+                    ]),
+                    vec![],
+                )),
                 properties: HashMap::from([("id".into(), Value::Integer(1))]),
             },
             Feature {
-                geometry: Geometry::Point(point!(x: 0.0, y: 0.0)),
+                geometry: FeatureGeometry::Point(Point::new(0.0, 0.0)),
                 properties: HashMap::from([("id".into(), Value::Integer(2))]),
             },
         ];
@@ -253,7 +256,7 @@ mod tests {
     #[test]
     fn test_geometry_type_check() {
         let features = vec![Feature {
-            geometry: Geometry::Point(point!(x: 0.0, y: 0.0)),
+            geometry: FeatureGeometry::Point(Point::new(0.0, 0.0)),
             properties: HashMap::new(),
         }];
         let fc = FeatureCollection::new(features, None);

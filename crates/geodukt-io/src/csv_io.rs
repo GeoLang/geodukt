@@ -12,8 +12,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 
-use geo::{Geometry, Point};
 use geodukt_core::feature::{Feature, FeatureCollection, Properties, Value};
+use geodukt_core::geometry::{FeatureGeometry, Point};
 use geodukt_core::manifest::{Sink, Source};
 use geodukt_core::pipeline::{PipelineError, SinkWriter, SourceReader};
 
@@ -97,7 +97,7 @@ impl SourceReader for CsvReader {
             }
 
             features.push(Feature {
-                geometry: Geometry::Point(Point::new(lon, lat)),
+                geometry: FeatureGeometry::Point(Point::new(lon, lat)),
                 properties: props,
             });
         }
@@ -142,7 +142,7 @@ impl SinkWriter for CsvWriter {
                 )
             })?;
 
-            let row = [point.x().to_string(), point.y().to_string()]
+            let row = [point.0.x.to_string(), point.0.y.to_string()]
                 .into_iter()
                 .chain(columns.iter().map(|c| cell(&feature.properties, c)));
             writer
@@ -184,26 +184,15 @@ fn attribute_columns(path: &str, data: &FeatureCollection) -> Result<Vec<String>
     Ok(columns)
 }
 
-fn point_of(geometry: &Geometry) -> Option<Point> {
+fn point_of(geometry: &FeatureGeometry) -> Option<Point> {
     match geometry {
-        Geometry::Point(p) => Some(*p),
+        FeatureGeometry::Point(p) => Some(*p),
         _ => None,
     }
 }
 
-fn geometry_label(geometry: &Geometry) -> &'static str {
-    match geometry {
-        Geometry::Point(_) => "Point",
-        Geometry::Line(_) => "Line",
-        Geometry::LineString(_) => "LineString",
-        Geometry::Polygon(_) => "Polygon",
-        Geometry::MultiPoint(_) => "MultiPoint",
-        Geometry::MultiLineString(_) => "MultiLineString",
-        Geometry::MultiPolygon(_) => "MultiPolygon",
-        Geometry::GeometryCollection(_) => "GeometryCollection",
-        Geometry::Rect(_) => "Rect",
-        Geometry::Triangle(_) => "Triangle",
-    }
+fn geometry_label(geometry: &FeatureGeometry) -> &'static str {
+    geodukt_core::geometry::type_name(geometry)
 }
 
 /// Render one property. Floats keep a decimal point so the reader's type
@@ -228,6 +217,7 @@ fn cell(properties: &Properties, column: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use geodukt_core::geometry::{Coord, Polygon};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -276,7 +266,7 @@ mod tests {
 
     fn feature(x: f64, y: f64, props: &[(&str, Value)]) -> Feature {
         Feature {
-            geometry: Geometry::Point(Point::new(x, y)),
+            geometry: FeatureGeometry::Point(Point::new(x, y)),
             properties: props
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.clone()))
@@ -327,7 +317,10 @@ mod tests {
         assert_eq!(back.len(), 2);
         assert_eq!(back.crs.as_deref(), Some("EPSG:4326"));
         for (before, after) in fc.features.iter().zip(&back.features) {
-            assert_eq!(before.geometry, after.geometry);
+            assert!(geodukt_core::geometry::equals(
+                &before.geometry,
+                &after.geometry
+            ));
             assert_eq!(before.properties, after.properties);
         }
     }
@@ -411,10 +404,11 @@ mod tests {
 
     #[test]
     fn test_non_point_geometry_rejected() {
-        let polygon = Geometry::Polygon(geo::Polygon::new(
-            geo::LineString::from(vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]),
-            vec![],
-        ));
+        let polygon = FeatureGeometry::Polygon(Polygon::from_coords(&[
+            Coord::new(0.0, 0.0),
+            Coord::new(1.0, 0.0),
+            Coord::new(1.0, 1.0),
+        ]));
         let fc = FeatureCollection::new(
             vec![Feature {
                 geometry: polygon,

@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use geodukt_core::feature::{FeatureCollection, Value};
+use geodukt_core::geometry::FeatureGeometry;
 use geodukt_core::pipeline::PipelineError;
 
 /// Database backend type.
@@ -238,14 +239,14 @@ pub fn generate_create_table(
     )
 }
 
-fn geometry_pg_type(geom: &geo::Geometry<f64>) -> &'static str {
+fn geometry_pg_type(geom: &FeatureGeometry) -> &'static str {
     match geom {
-        geo::Geometry::Point(_) => "POINT",
-        geo::Geometry::MultiPoint(_) => "MULTIPOINT",
-        geo::Geometry::LineString(_) => "LINESTRING",
-        geo::Geometry::MultiLineString(_) => "MULTILINESTRING",
-        geo::Geometry::Polygon(_) => "POLYGON",
-        geo::Geometry::MultiPolygon(_) => "MULTIPOLYGON",
+        FeatureGeometry::Point(_) => "POINT",
+        FeatureGeometry::MultiPoint(_) => "MULTIPOINT",
+        FeatureGeometry::LineString(_) => "LINESTRING",
+        FeatureGeometry::MultiLineString(_) => "MULTILINESTRING",
+        FeatureGeometry::Polygon(_) => "POLYGON",
+        FeatureGeometry::MultiPolygon(_) => "MULTIPOLYGON",
         _ => "GEOMETRY",
     }
 }
@@ -253,8 +254,8 @@ fn geometry_pg_type(geom: &geo::Geometry<f64>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo::{Geometry, point};
     use geodukt_core::feature::Feature;
+    use geodukt_core::geometry::Point;
     use std::collections::HashMap;
 
     #[test]
@@ -305,7 +306,7 @@ mod tests {
     #[test]
     fn test_generate_ddl() {
         let f = Feature {
-            geometry: Geometry::Point(point!(x: 1.0, y: 2.0)),
+            geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
             properties: HashMap::from([
                 ("name".to_string(), Value::String("test".to_string())),
                 ("pop".to_string(), Value::Integer(1000)),

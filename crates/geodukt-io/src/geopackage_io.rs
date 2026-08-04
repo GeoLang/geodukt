@@ -4,13 +4,16 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use geodukt_core::feature::{Feature, FeatureCollection, Value};
+use geodukt_core::geometry::{
+    Coord, FeatureGeometry, LineString, MultiLineString, MultiPoint, MultiPolygon, Point, Polygon,
+    Ring,
+};
 use geodukt_core::pipeline::PipelineError;
-use geozero::{CoordDimensions, ToWkb};
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
 
 /// Parse GeoPackage binary geometry (GP header + WKB).
-fn parse_gpkg_geometry(data: &[u8]) -> geo::Geometry {
+fn parse_gpkg_geometry(data: &[u8]) -> FeatureGeometry {
     // GeoPackage binary format:
     // bytes 0-1: magic "GP"
     // byte 2: version
@@ -19,7 +22,7 @@ fn parse_gpkg_geometry(data: &[u8]) -> geo::Geometry {
     // then envelope (variable size based on flags), then WKB
     if data.len() < 8 || data[0] != b'G' || data[1] != b'P' {
         // Try as raw WKB
-        return parse_wkb(data).unwrap_or_else(|| geo::Geometry::Point(geo::Point::new(0.0, 0.0)));
+        return parse_wkb(data).unwrap_or_else(origin);
     }
 
     let flags = data[3];
@@ -35,167 +38,216 @@ fn parse_gpkg_geometry(data: &[u8]) -> geo::Geometry {
 
     let wkb_offset = 8 + envelope_size;
     if wkb_offset >= data.len() {
-        return geo::Geometry::Point(geo::Point::new(0.0, 0.0));
+        return origin();
     }
 
-    parse_wkb(&data[wkb_offset..])
-        .unwrap_or_else(|| geo::Geometry::Point(geo::Point::new(0.0, 0.0)))
+    parse_wkb(&data[wkb_offset..]).unwrap_or_else(origin)
 }
 
-/// Parse WKB geometry (limited to Point, LineString, Polygon, Multi* variants).
-fn parse_wkb(data: &[u8]) -> Option<geo::Geometry> {
-    if data.len() < 5 {
-        return None;
-    }
-
-    let le = data[0] == 1;
-    let geom_type = if le {
-        u32::from_le_bytes([data[1], data[2], data[3], data[4]])
-    } else {
-        u32::from_be_bytes([data[1], data[2], data[3], data[4]])
-    };
-
-    let rest = &data[5..];
-
-    match geom_type & 0xFF {
-        1 => parse_wkb_point(rest, le).map(geo::Geometry::Point),
-        2 => parse_wkb_linestring(rest, le).map(geo::Geometry::LineString),
-        3 => parse_wkb_polygon(rest, le).map(geo::Geometry::Polygon),
-        4 => parse_wkb_multi_point(rest, le).map(geo::Geometry::MultiPoint),
-        5 => parse_wkb_multi_linestring(rest, le).map(geo::Geometry::MultiLineString),
-        6 => parse_wkb_multi_polygon(rest, le).map(geo::Geometry::MultiPolygon),
-        _ => None,
-    }
+/// What an unreadable blob decodes to, so one bad row does not fail the read.
+fn origin() -> FeatureGeometry {
+    FeatureGeometry::Point(Point::new(0.0, 0.0))
 }
 
-fn read_f64(data: &[u8], offset: usize, le: bool) -> Option<f64> {
-    if offset + 8 > data.len() {
-        return None;
-    }
-    let bytes: [u8; 8] = data[offset..offset + 8].try_into().ok()?;
-    Some(if le {
-        f64::from_le_bytes(bytes)
-    } else {
-        f64::from_be_bytes(bytes)
-    })
+fn parse_wkb(data: &[u8]) -> Option<FeatureGeometry> {
+    Wkb::new(data).geometry()
 }
 
-fn read_u32(data: &[u8], offset: usize, le: bool) -> Option<u32> {
-    if offset + 4 > data.len() {
-        return None;
-    }
-    let bytes: [u8; 4] = data[offset..offset + 4].try_into().ok()?;
-    Some(if le {
-        u32::from_le_bytes(bytes)
-    } else {
-        u32::from_be_bytes(bytes)
-    })
+/// Cursor over a WKB byte string. Every nested geometry carries its own byte
+/// order byte, so the position and the endianness travel together.
+struct Wkb<'a> {
+    data: &'a [u8],
+    pos: usize,
+    le: bool,
 }
 
-fn parse_wkb_point(data: &[u8], le: bool) -> Option<geo::Point> {
-    let x = read_f64(data, 0, le)?;
-    let y = read_f64(data, 8, le)?;
-    Some(geo::Point::new(x, y))
-}
-
-fn parse_wkb_linestring(data: &[u8], le: bool) -> Option<geo::LineString> {
-    let n = read_u32(data, 0, le)? as usize;
-    let mut coords = Vec::with_capacity(n);
-    for i in 0..n {
-        let off = 4 + i * 16;
-        let x = read_f64(data, off, le)?;
-        let y = read_f64(data, off + 8, le)?;
-        coords.push(geo::Coord { x, y });
-    }
-    Some(geo::LineString::from(coords))
-}
-
-fn parse_wkb_polygon(data: &[u8], le: bool) -> Option<geo::Polygon> {
-    let num_rings = read_u32(data, 0, le)? as usize;
-    let mut offset = 4;
-    let mut rings = Vec::with_capacity(num_rings);
-    for _ in 0..num_rings {
-        let n = read_u32(data, offset, le)? as usize;
-        offset += 4;
-        let mut coords = Vec::with_capacity(n);
-        for _ in 0..n {
-            let x = read_f64(data, offset, le)?;
-            let y = read_f64(data, offset + 8, le)?;
-            coords.push(geo::Coord { x, y });
-            offset += 16;
+impl<'a> Wkb<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self {
+            data,
+            pos: 0,
+            le: true,
         }
-        rings.push(geo::LineString::from(coords));
     }
-    let exterior = rings.remove(0);
-    Some(geo::Polygon::new(exterior, rings))
-}
 
-fn parse_wkb_multi_point(data: &[u8], le: bool) -> Option<geo::MultiPoint> {
-    let n = read_u32(data, 0, le)? as usize;
-    let mut points = Vec::with_capacity(n);
-    let mut offset = 4;
-    for _ in 0..n {
-        // Each sub-geometry has its own WKB header (5 bytes)
-        if offset + 5 + 16 > data.len() {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let end = self.pos.checked_add(n)?;
+        let slice = self.data.get(self.pos..end)?;
+        self.pos = end;
+        Some(slice)
+    }
+
+    fn byte(&mut self) -> Option<u8> {
+        self.take(1).map(|b| b[0])
+    }
+
+    fn count(&mut self) -> Option<u32> {
+        let bytes: [u8; 4] = self.take(4)?.try_into().ok()?;
+        Some(if self.le {
+            u32::from_le_bytes(bytes)
+        } else {
+            u32::from_be_bytes(bytes)
+        })
+    }
+
+    fn number(&mut self) -> Option<f64> {
+        let bytes: [u8; 8] = self.take(8)?.try_into().ok()?;
+        Some(if self.le {
+            f64::from_le_bytes(bytes)
+        } else {
+            f64::from_be_bytes(bytes)
+        })
+    }
+
+    fn coord(&mut self) -> Option<Coord> {
+        Some(Coord::new(self.number()?, self.number()?))
+    }
+
+    fn coords(&mut self) -> Option<Vec<Coord>> {
+        let n = self.count()? as usize;
+        (0..n).map(|_| self.coord()).collect()
+    }
+
+    fn polygon(&mut self) -> Option<Polygon> {
+        let num_rings = self.count()? as usize;
+        let mut rings: Vec<Ring> = Vec::with_capacity(num_rings);
+        for _ in 0..num_rings {
+            rings.push(Ring::new(self.coords()?));
+        }
+        if rings.is_empty() {
             return None;
         }
-        let x = read_f64(data, offset + 5, le)?;
-        let y = read_f64(data, offset + 13, le)?;
-        points.push(geo::Point::new(x, y));
-        offset += 5 + 16;
+        Some(Polygon::new(rings.remove(0), rings))
     }
-    Some(geo::MultiPoint::new(points))
-}
 
-fn parse_wkb_multi_linestring(data: &[u8], le: bool) -> Option<geo::MultiLineString> {
-    let n = read_u32(data, 0, le)? as usize;
-    let mut lines = Vec::with_capacity(n);
-    let mut offset = 4;
-    for _ in 0..n {
-        // skip 5-byte WKB header
-        offset += 5;
-        let num_pts = read_u32(data, offset, le)? as usize;
-        offset += 4;
-        let mut coords = Vec::with_capacity(num_pts);
-        for _ in 0..num_pts {
-            let x = read_f64(data, offset, le)?;
-            let y = read_f64(data, offset + 8, le)?;
-            coords.push(geo::Coord { x, y });
-            offset += 16;
-        }
-        lines.push(geo::LineString::from(coords));
+    fn members(&mut self) -> Option<Vec<FeatureGeometry>> {
+        let n = self.count()? as usize;
+        (0..n).map(|_| self.geometry()).collect()
     }
-    Some(geo::MultiLineString::new(lines))
-}
 
-fn parse_wkb_multi_polygon(data: &[u8], le: bool) -> Option<geo::MultiPolygon> {
-    let n = read_u32(data, 0, le)? as usize;
-    let mut polygons = Vec::with_capacity(n);
-    let mut offset = 4;
-    for _ in 0..n {
-        // skip 5-byte WKB header
-        offset += 5;
-        let num_rings = read_u32(data, offset, le)? as usize;
-        offset += 4;
-        let mut rings = Vec::with_capacity(num_rings);
-        for _ in 0..num_rings {
-            let num_pts = read_u32(data, offset, le)? as usize;
-            offset += 4;
-            let mut coords = Vec::with_capacity(num_pts);
-            for _ in 0..num_pts {
-                let x = read_f64(data, offset, le)?;
-                let y = read_f64(data, offset + 8, le)?;
-                coords.push(geo::Coord { x, y });
-                offset += 16;
+    /// One geometry, byte order and type header included.
+    fn geometry(&mut self) -> Option<FeatureGeometry> {
+        self.le = self.byte()? == 1;
+        match self.count()? & 0xFF {
+            1 => Some(FeatureGeometry::Point(Point(self.coord()?))),
+            2 => Some(FeatureGeometry::LineString(LineString::new(self.coords()?))),
+            3 => Some(FeatureGeometry::Polygon(self.polygon()?)),
+            4 => {
+                let points = self
+                    .members()?
+                    .into_iter()
+                    .map(|g| match g {
+                        FeatureGeometry::Point(p) => Some(p),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(FeatureGeometry::MultiPoint(MultiPoint::new(points)))
             }
-            rings.push(geo::LineString::from(coords));
-        }
-        if !rings.is_empty() {
-            let exterior = rings.remove(0);
-            polygons.push(geo::Polygon::new(exterior, rings));
+            5 => {
+                let lines = self
+                    .members()?
+                    .into_iter()
+                    .map(|g| match g {
+                        FeatureGeometry::LineString(ls) => Some(ls),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(FeatureGeometry::MultiLineString(MultiLineString::new(
+                    lines,
+                )))
+            }
+            6 => {
+                let polygons = self
+                    .members()?
+                    .into_iter()
+                    .map(|g| match g {
+                        FeatureGeometry::Polygon(p) => Some(p),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(FeatureGeometry::MultiPolygon(MultiPolygon::new(polygons)))
+            }
+            7 => Some(FeatureGeometry::GeometryCollection(self.members()?)),
+            _ => None,
         }
     }
-    Some(geo::MultiPolygon::new(polygons))
+}
+
+/// A GeoPackage geometry blob: the GP header [`parse_gpkg_geometry`] documents,
+/// with no envelope, followed by little-endian WKB.
+fn gpkg_blob(geom: &FeatureGeometry, srs: i32) -> Vec<u8> {
+    let mut out = vec![b'G', b'P', 0, 0b0000_0001];
+    out.extend_from_slice(&srs.to_le_bytes());
+    write_wkb(geom, &mut out);
+    out
+}
+
+fn write_wkb(geom: &FeatureGeometry, out: &mut Vec<u8>) {
+    let kind: u32 = match geom {
+        FeatureGeometry::Point(_) => 1,
+        FeatureGeometry::LineString(_) => 2,
+        FeatureGeometry::Polygon(_) => 3,
+        FeatureGeometry::MultiPoint(_) => 4,
+        FeatureGeometry::MultiLineString(_) => 5,
+        FeatureGeometry::MultiPolygon(_) => 6,
+        FeatureGeometry::GeometryCollection(_) => 7,
+    };
+    out.push(1);
+    out.extend_from_slice(&kind.to_le_bytes());
+
+    match geom {
+        FeatureGeometry::Point(p) => write_coord(p.0, out),
+        FeatureGeometry::LineString(ls) => write_coords(ls.coords(), out),
+        FeatureGeometry::Polygon(poly) => write_polygon(poly, out),
+        FeatureGeometry::MultiPoint(mp) => {
+            write_count(mp.points().len(), out);
+            for p in mp.points() {
+                write_wkb(&FeatureGeometry::Point(*p), out);
+            }
+        }
+        FeatureGeometry::MultiLineString(mls) => {
+            write_count(mls.linestrings().len(), out);
+            for ls in mls.linestrings() {
+                write_wkb(&FeatureGeometry::LineString(ls.clone()), out);
+            }
+        }
+        FeatureGeometry::MultiPolygon(mp) => {
+            write_count(mp.polygons().len(), out);
+            for poly in mp.polygons() {
+                write_wkb(&FeatureGeometry::Polygon(poly.clone()), out);
+            }
+        }
+        FeatureGeometry::GeometryCollection(members) => {
+            write_count(members.len(), out);
+            for member in members {
+                write_wkb(member, out);
+            }
+        }
+    }
+}
+
+fn write_count(n: usize, out: &mut Vec<u8>) {
+    out.extend_from_slice(&(n as u32).to_le_bytes());
+}
+
+fn write_coord(c: Coord, out: &mut Vec<u8>) {
+    out.extend_from_slice(&c.x.to_le_bytes());
+    out.extend_from_slice(&c.y.to_le_bytes());
+}
+
+fn write_coords(coords: &[Coord], out: &mut Vec<u8>) {
+    write_count(coords.len(), out);
+    for c in coords {
+        write_coord(*c, out);
+    }
+}
+
+fn write_polygon(poly: &Polygon, out: &mut Vec<u8>) {
+    write_count(1 + poly.interiors().len(), out);
+    write_coords(poly.exterior().coords(), out);
+    for hole in poly.interiors() {
+        write_coords(hole.coords(), out);
+    }
 }
 
 /// Read features from a GeoPackage file.
@@ -363,16 +415,14 @@ fn to_sql(value: Option<&Value>) -> rusqlite::types::Value {
 /// The gpkg_geometry_columns type name for the layer. A layer holding more than
 /// one geometry type is declared as the generic GEOMETRY.
 fn geometry_type_name(fc: &FeatureCollection) -> &'static str {
-    let name_of = |g: &geo::Geometry| match g {
-        geo::Geometry::Point(_) => "POINT",
-        geo::Geometry::Line(_) | geo::Geometry::LineString(_) => "LINESTRING",
-        geo::Geometry::Polygon(_) | geo::Geometry::Rect(_) | geo::Geometry::Triangle(_) => {
-            "POLYGON"
-        }
-        geo::Geometry::MultiPoint(_) => "MULTIPOINT",
-        geo::Geometry::MultiLineString(_) => "MULTILINESTRING",
-        geo::Geometry::MultiPolygon(_) => "MULTIPOLYGON",
-        geo::Geometry::GeometryCollection(_) => "GEOMETRYCOLLECTION",
+    let name_of = |g: &FeatureGeometry| match g {
+        FeatureGeometry::Point(_) => "POINT",
+        FeatureGeometry::LineString(_) => "LINESTRING",
+        FeatureGeometry::Polygon(_) => "POLYGON",
+        FeatureGeometry::MultiPoint(_) => "MULTIPOINT",
+        FeatureGeometry::MultiLineString(_) => "MULTILINESTRING",
+        FeatureGeometry::MultiPolygon(_) => "MULTIPOLYGON",
+        FeatureGeometry::GeometryCollection(_) => "GEOMETRYCOLLECTION",
     };
 
     let mut kinds = fc.features.iter().map(|f| name_of(&f.geometry));
@@ -502,10 +552,7 @@ pub fn write_geopackage(
     let mut stmt = conn.prepare(&insert_sql).map_err(sink_err)?;
 
     for feature in &fc.features {
-        let blob = feature
-            .geometry
-            .to_gpkg_wkb(CoordDimensions::xy(), Some(srs), Vec::new())
-            .map_err(|e| sink_err(format!("failed to encode geometry: {e}")))?;
+        let blob = gpkg_blob(&feature.geometry, srs);
 
         let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Blob(blob)];
         params.extend(columns.iter().map(|c| to_sql(feature.properties.get(c))));

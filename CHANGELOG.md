@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Geometry now comes from topoi and coordinate transforms from projicio, both
+  pure Rust, replacing the `geo`, `proj` and `geozero` crates. `Feature.geometry`
+  is a `topoi_core::geojson::FeatureGeometry`, which drops the `Line`, `Rect` and
+  `Triangle` variants a reader never produced and adds `GeometryCollection` to
+  the GeoPackage writer. Building geodukt no longer needs a PROJ system library
+  or its CRS database, so the `reproject` cargo feature is gone and reproject and
+  buffer are always available
 - Breaking: a transform that leaves out a parameter its operation cannot run
   without is rejected by `/validate`, `/run` and the CLI, naming the transform,
   the operation and what the parameter is for. `buffer.distance`,
@@ -54,7 +61,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generated from the registry table instead of a hand-written copy
 - The README pipeline example set `clip_to` on a clip transform, which nothing
   reads. It now uses the bounding box parameters clip actually takes
-- Five geodukt-transforms tests failed under `--no-default-features`. The buffer
-  ones assert metric distances, which only hold with the `reproject` feature, so
-  they are gated on it and the featureless build has its own CRS-units test. The
-  registry one hardcoded reproject's presence and now tracks the feature

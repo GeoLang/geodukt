@@ -18,5 +18,5 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
-geo = "0.33"
+topoi-core = { git = "https://github.com/GeoLang/topoi.git", branch = "master" }
 tempfile = "3"

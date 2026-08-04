@@ -1,6 +1,7 @@
 //! Testing framework — assert output schemas, counts, geometry types, spatial relationships.
 
 use crate::feature::FeatureCollection;
+use crate::geometry::FeatureGeometry;
 use crate::quality::{QualityRule, check_quality};
 
 /// A test assertion for pipeline output validation.
@@ -152,13 +153,13 @@ fn check_assertion(assertion: &TestAssertion, fc: &FeatureCollection) -> Asserti
     }
 }
 
-fn is_empty_geometry(geom: &geo::Geometry<f64>) -> bool {
+fn is_empty_geometry(geom: &FeatureGeometry) -> bool {
     match geom {
-        geo::Geometry::LineString(ls) => ls.0.is_empty(),
-        geo::Geometry::Polygon(p) => p.exterior().0.is_empty(),
-        geo::Geometry::MultiPoint(mp) => mp.0.is_empty(),
-        geo::Geometry::MultiLineString(mls) => mls.0.is_empty(),
-        geo::Geometry::MultiPolygon(mp) => mp.0.is_empty(),
+        FeatureGeometry::LineString(ls) => ls.coords().is_empty(),
+        FeatureGeometry::Polygon(p) => p.exterior().coords().is_empty(),
+        FeatureGeometry::MultiPoint(mp) => mp.points().is_empty(),
+        FeatureGeometry::MultiLineString(mls) => mls.linestrings().is_empty(),
+        FeatureGeometry::MultiPolygon(mp) => mp.polygons().is_empty(),
         _ => false,
     }
 }
@@ -167,13 +168,13 @@ fn is_empty_geometry(geom: &geo::Geometry<f64>) -> bool {
 mod tests {
     use super::*;
     use crate::feature::{Feature, Value};
-    use geo::{Geometry, point};
+    use crate::geometry::Point;
     use std::collections::HashMap;
 
     #[test]
     fn test_pipeline_tests() {
         let features = vec![Feature {
-            geometry: Geometry::Point(point!(x: 1.0, y: 2.0)),
+            geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
             properties: HashMap::from([("name".into(), Value::String("test".into()))]),
         }];
         let fc = FeatureCollection::new(features, Some("EPSG:4326".into()));
