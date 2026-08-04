@@ -12,6 +12,7 @@ pub mod lineage;
 pub mod manifest;
 pub mod pipeline;
 pub mod quality;
+pub mod routing;
 pub mod scheduler;
 pub mod schema;
 pub mod streaming;

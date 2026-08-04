@@ -46,5 +46,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/GeoLang/topoi.git",
     "https://github.com/GeoLang/projicio.git",
+    "https://github.com/GeoLang/geoplumb.git",
+    "https://github.com/GeoLang/terrano.git",
+    "https://github.com/GeoLang/nubis.git",
 ]
 
