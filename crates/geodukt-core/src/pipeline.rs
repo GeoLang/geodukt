@@ -6,6 +6,7 @@ use thiserror::Error;
 use crate::dag::{Dag, DagError, Node};
 use crate::feature::FeatureCollection;
 use crate::manifest::{Manifest, Sink, Source};
+use crate::routing::EngineRouter;
 
 /// Errors during pipeline execution.
 #[derive(Debug, Error)]
@@ -66,6 +67,9 @@ impl Pipeline {
 
     /// Execute the pipeline with the given source/transform/sink implementations.
     ///
+    /// The head of the pipeline the engine can run goes onto a geoplumb graph
+    /// and comes back at the first node that cannot, see [`crate::routing`].
+    ///
     /// On failure the steps that already ran come back with the error, so a
     /// caller can record how far the run got.
     pub fn execute(
@@ -79,15 +83,22 @@ impl Pipeline {
             .topological_order()
             .map_err(|e| Box::new(ExecutionFailure::before_start(e.into())))?;
 
-        let mut data: HashMap<String, FeatureCollection> = HashMap::new();
-        let mut report = ExecutionReport::default();
+        let io = Io {
+            reader,
+            transforms,
+            writer,
+        };
+        let mut state = RunState {
+            order: &order,
+            data: HashMap::new(),
+            report: ExecutionReport::default(),
+            router: EngineRouter::new(&order),
+        };
 
         for (i, node) in order.iter().enumerate() {
-            if let Err(error) =
-                self.run_node(node, reader, transforms, writer, &mut data, &mut report)
-            {
+            if let Err(error) = run_node(node, &io, &mut state) {
                 return Err(Box::new(ExecutionFailure {
-                    completed: report.steps,
+                    completed: state.report.steps,
                     failed: Some(FailedStep {
                         name: node.name().to_string(),
                         message: error.to_string(),
@@ -101,57 +112,83 @@ impl Pipeline {
             }
         }
 
-        Ok(report)
-    }
-
-    fn run_node(
-        &self,
-        node: &Node,
-        reader: &dyn SourceReader,
-        transforms: &HashMap<String, Box<dyn TransformOp>>,
-        writer: &dyn SinkWriter,
-        data: &mut HashMap<String, FeatureCollection>,
-        report: &mut ExecutionReport,
-    ) -> Result<(), PipelineError> {
-        match node {
-            Node::Source(source) => {
-                let fc = reader.read_source(source)?;
-                report.record_step(&source.name, fc.len());
-                data.insert(source.name.clone(), fc);
-            }
-            Node::Transform(transform) => {
-                let input_data =
-                    data.get(&transform.input)
-                        .ok_or_else(|| PipelineError::Transform {
-                            name: transform.name.clone(),
-                            message: format!("input '{}' not available", transform.input),
-                        })?;
-                let op = transforms.get(&transform.operation).ok_or_else(|| {
-                    PipelineError::Transform {
-                        name: transform.name.clone(),
-                        message: format!("unknown operation '{}'", transform.operation),
-                    }
-                })?;
-                let result = op.apply(input_data, &transform.params)?;
-                report.record_step(&transform.name, result.len());
-                data.insert(transform.name.clone(), result);
-            }
-            Node::Sink(sink) => {
-                let input_data = data.get(&sink.input).ok_or_else(|| PipelineError::Sink {
-                    name: sink.name.clone(),
-                    message: format!("input '{}' not available", sink.input),
-                })?;
-                writer.write_sink(input_data, sink)?;
-                report.record_step(&sink.name, input_data.len());
-            }
-        }
-        Ok(())
+        Ok(state.report)
     }
 
     /// Get the manifest.
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }
+}
+
+/// The implementations one run was handed.
+struct Io<'a> {
+    reader: &'a dyn SourceReader,
+    transforms: &'a HashMap<String, Box<dyn TransformOp>>,
+    writer: &'a dyn SinkWriter,
+}
+
+/// What a run carries from node to node.
+struct RunState<'a> {
+    order: &'a [&'a Node],
+    data: HashMap<String, FeatureCollection>,
+    report: ExecutionReport,
+    router: EngineRouter,
+}
+
+fn run_node(node: &Node, io: &Io<'_>, state: &mut RunState<'_>) -> Result<(), PipelineError> {
+    match node {
+        Node::Source(source) => {
+            let fc = io.reader.read_source(source)?;
+            // a source on the engine holds the same features there, so its
+            // count is the collection's either way and the collection itself
+            // is kept only for whatever still reads it off the engine
+            let resident = state.router.admit_source(state.order, source, &fc)?;
+            state.report.record_step(&source.name, fc.len());
+            if !resident || state.router.feeds_off_engine(state.order, &source.name) {
+                state.data.insert(source.name.clone(), fc);
+            }
+        }
+        Node::Transform(transform) if state.router.is_resident(&transform.name) => {
+            let wanted = state.router.feeds_off_engine(state.order, &transform.name);
+            let (count, materialized) = state.router.pull(&transform.name, wanted)?;
+            state.report.record_step(&transform.name, count);
+            if let Some(fc) = materialized {
+                state.data.insert(transform.name.clone(), fc);
+            }
+        }
+        Node::Transform(transform) => {
+            let input_data =
+                state
+                    .data
+                    .get(&transform.input)
+                    .ok_or_else(|| PipelineError::Transform {
+                        name: transform.name.clone(),
+                        message: format!("input '{}' not available", transform.input),
+                    })?;
+            let op = io.transforms.get(&transform.operation).ok_or_else(|| {
+                PipelineError::Transform {
+                    name: transform.name.clone(),
+                    message: format!("unknown operation '{}'", transform.operation),
+                }
+            })?;
+            let result = op.apply(input_data, &transform.params)?;
+            state.report.record_step(&transform.name, result.len());
+            state.data.insert(transform.name.clone(), result);
+        }
+        Node::Sink(sink) => {
+            let input_data = state
+                .data
+                .get(&sink.input)
+                .ok_or_else(|| PipelineError::Sink {
+                    name: sink.name.clone(),
+                    message: format!("input '{}' not available", sink.input),
+                })?;
+            io.writer.write_sink(input_data, sink)?;
+            state.report.record_step(&sink.name, input_data.len());
+        }
+    }
+    Ok(())
 }
 
 /// Report from a pipeline execution.
