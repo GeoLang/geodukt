@@ -2352,7 +2352,7 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 [[package]]
 name = "topoi-core"
 version = "0.1.0"
-source = "git+https://github.com/GeoLang/topoi.git?branch=master#945a63e37f7f01c5e75572a3ce92f83330d2b9d3"
+source = "git+https://github.com/GeoLang/topoi.git?branch=master#f94777c61f3ef99d3a3aabb01cac3059b809d859"
 dependencies = [
  "i_overlay",
  "serde",

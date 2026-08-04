@@ -536,6 +536,54 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
+    /// the tool clips every geometry kind, not polygons only
+    #[tokio::test]
+    async fn test_clip_cuts_lines_and_drops_outside_points() {
+        let input = serde_json::json!({
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": [[-1.0, 0.5], [3.0, 0.5]]},
+                    "properties": {}
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0.5, 0.5]},
+                    "properties": {}
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [5.0, 5.0]},
+                    "properties": {}
+                }
+            ]
+        });
+        let body = serde_json::json!({
+            "input": input,
+            "params": {"min_x": 0.0, "min_y": 0.0, "max_x": 1.0, "max_y": 1.0}
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/clip")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+
+        let resp = test_router().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let gp_resp: GpResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(gp_resp.feature_count, 2, "the outside point is gone");
+        assert_eq!(
+            gp_resp.output["features"][0]["geometry"]["coordinates"],
+            serde_json::json!([[0.0, 0.5], [1.0, 0.5]]),
+            "the line is cut at the box"
+        );
+    }
+
     #[tokio::test]
     async fn test_clip_rejects_a_missing_edge() {
         // a clip that silently kept the whole world read as a clip that worked

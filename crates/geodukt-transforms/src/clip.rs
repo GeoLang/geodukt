@@ -3,11 +3,13 @@
 use std::collections::HashMap;
 
 use geodukt_core::feature::{Feature, FeatureCollection};
-use geodukt_core::geometry::{Coord, FeatureGeometry, MultiPolygon, Polygon, Ring};
+use geodukt_core::geometry::{Coord, MultiPolygon, Polygon, Ring};
 use geodukt_core::pipeline::{PipelineError, TransformOp};
-use topoi_core::intersection;
+use topoi_core::clip_to_boundary;
 
-/// Clip operation: intersects feature geometries with a clip boundary.
+/// Clip operation: cuts feature geometries down to a clip boundary. Polygons
+/// are intersected, lines are cut at the crossings, points outside are dropped,
+/// and a feature left with nothing goes with them.
 /// Requires a secondary input specified by `clip_to` param (resolved by pipeline).
 #[derive(Default)]
 pub struct ClipTransform {
@@ -60,9 +62,8 @@ impl TransformOp for ClipTransform {
             .features
             .iter()
             .filter_map(|f| {
-                let clipped = clip_geometry(&f.geometry, &clip)?;
                 Some(Feature {
-                    geometry: clipped,
+                    geometry: clip_to_boundary(&f.geometry, &clip)?,
                     properties: f.properties.clone(),
                 })
             })
@@ -72,36 +73,33 @@ impl TransformOp for ClipTransform {
     }
 }
 
-fn clip_geometry(geom: &FeatureGeometry, clip: &MultiPolygon) -> Option<FeatureGeometry> {
-    let boundary = clip.polygons().first()?;
-    match geom {
-        FeatureGeometry::Polygon(poly) => {
-            let result = intersection(poly, boundary);
-            match result.polygons() {
-                [] => None,
-                [single] => Some(FeatureGeometry::Polygon(single.clone())),
-                _ => Some(FeatureGeometry::MultiPolygon(result)),
-            }
-        }
-        FeatureGeometry::MultiPolygon(mp) => {
-            let mut polys = Vec::new();
-            for poly in mp.polygons() {
-                polys.extend(intersection(poly, boundary).polygons().iter().cloned());
-            }
-            if polys.is_empty() {
-                None
-            } else {
-                Some(FeatureGeometry::MultiPolygon(MultiPolygon::new(polys)))
-            }
-        }
-        // For points/lines, check containment via bounding box (simplified)
-        _ => Some(geom.clone()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use geodukt_core::geometry::{FeatureGeometry, LineString, Point};
+
+    /// the unit square
+    fn params() -> HashMap<String, toml::Value> {
+        HashMap::from([
+            ("min_x".into(), toml::Value::Float(0.0)),
+            ("min_y".into(), toml::Value::Float(0.0)),
+            ("max_x".into(), toml::Value::Float(1.0)),
+            ("max_y".into(), toml::Value::Float(1.0)),
+        ])
+    }
+
+    fn feature(geometry: FeatureGeometry) -> Feature {
+        Feature {
+            geometry,
+            properties: HashMap::new(),
+        }
+    }
+
+    fn clipped(features: Vec<Feature>) -> FeatureCollection {
+        ClipTransform::new()
+            .apply(&FeatureCollection::new(features, None), &params())
+            .unwrap()
+    }
 
     #[test]
     fn test_clip_polygon() {
@@ -115,20 +113,41 @@ mod tests {
             ]),
             vec![],
         );
-        let features = vec![Feature {
-            geometry: FeatureGeometry::Polygon(poly),
-            properties: HashMap::new(),
-        }];
-        let fc = FeatureCollection::new(features, None);
-
-        let params = HashMap::from([
-            ("min_x".into(), toml::Value::Float(0.0)),
-            ("min_y".into(), toml::Value::Float(0.0)),
-            ("max_x".into(), toml::Value::Float(1.0)),
-            ("max_y".into(), toml::Value::Float(1.0)),
-        ]);
-
-        let result = ClipTransform::new().apply(&fc, &params).unwrap();
+        let result = clipped(vec![feature(FeatureGeometry::Polygon(poly))]);
         assert_eq!(result.len(), 1);
+    }
+
+    /// a line leaving the box is cut where it crosses, not carried through
+    #[test]
+    fn test_clip_cuts_a_line_at_the_boundary() {
+        // the crossings land on quarter and half of the span, both exact, so
+        // the cut coordinates are exact too
+        let line = LineString::new(vec![Coord::new(-1.0, 0.5), Coord::new(3.0, 0.5)]);
+        let result = clipped(vec![feature(FeatureGeometry::LineString(line))]);
+        assert_eq!(result.len(), 1);
+
+        let FeatureGeometry::LineString(cut) = &result.features[0].geometry else {
+            panic!(
+                "a line in, a line out, got {:?}",
+                result.features[0].geometry
+            );
+        };
+        assert_eq!(
+            cut.coords(),
+            [Coord::new(0.0, 0.5), Coord::new(1.0, 0.5)].as_slice()
+        );
+    }
+
+    #[test]
+    fn test_clip_drops_a_point_outside_the_boundary() {
+        let result = clipped(vec![
+            feature(FeatureGeometry::Point(Point::new(0.5, 0.5))),
+            feature(FeatureGeometry::Point(Point::new(5.0, 5.0))),
+        ]);
+        assert_eq!(result.len(), 1, "only the point inside the box survives");
+        let FeatureGeometry::Point(p) = &result.features[0].geometry else {
+            panic!("a point in, a point out");
+        };
+        assert_eq!(*p, Point::new(0.5, 0.5));
     }
 }

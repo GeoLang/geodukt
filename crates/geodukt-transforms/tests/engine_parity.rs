@@ -1,14 +1,16 @@
-//! A collection wide enough to tile many times over, filtered on the engine
-//! and filtered directly, compared feature by feature. The `filter` handed to
-//! `execute` refuses to run, so a green run is one the engine carried.
+//! Collections wide enough to tile many times over, put through an operation
+//! on the engine and through the same operation directly, compared feature by
+//! feature. The operation handed to `execute` refuses to run, so a green run
+//! is one the engine carried.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 use geodukt_core::feature::{Feature, FeatureCollection, Properties, Value};
-use geodukt_core::geometry::{self, Coord, FeatureGeometry, LineString, Polygon, Ring};
+use geodukt_core::geometry::{self, Coord, FeatureGeometry, LineString, Point, Polygon, Ring};
 use geodukt_core::manifest::{Manifest, Sink, Source};
 use geodukt_core::pipeline::{Pipeline, PipelineError, SinkWriter, SourceReader, TransformOp};
+use geodukt_transforms::clip::ClipTransform;
 use geodukt_transforms::filter::FilterTransform;
 
 /// vertices one unit apart along axis-aligned edges, so the collection's
@@ -189,27 +191,49 @@ fn length(geometry: &FeatureGeometry) -> f64 {
         .sum()
 }
 
-/// the same collection filtered both ways: through `execute`, where the
-/// registry entry refuses to run so only the engine can produce a result, and
-/// through the transform directly
-fn both_paths(fc: FeatureCollection) -> (FeatureCollection, FeatureCollection, Vec<usize>) {
-    let transforms: HashMap<String, Box<dyn TransformOp>> = HashMap::from([(
-        "filter".to_string(),
-        Box::new(OffEngine) as Box<dyn TransformOp>,
-    )]);
-    let pipeline = Pipeline::new(Manifest::from_toml(MANIFEST).unwrap()).unwrap();
+/// what the two paths made of one feature, compared the way `FeatureGeometry`
+/// allows: it carries no `PartialEq`
+fn same_geometry(got: &FeatureGeometry, want: &FeatureGeometry, what: &str) {
+    assert_eq!(
+        geometry::type_name(got),
+        geometry::type_name(want),
+        "{what} came back as {got:?}"
+    );
+    assert_eq!(
+        geometry::coords(got),
+        geometry::coords(want),
+        "{what} lost or gained vertices"
+    );
+}
+
+/// run the manifest through `execute` with `op` registered but refusing to
+/// run, so only the engine can produce a result
+fn through_engine(
+    manifest: &str,
+    op: &str,
+    fc: &FeatureCollection,
+) -> (FeatureCollection, Vec<usize>) {
+    let transforms: HashMap<String, Box<dyn TransformOp>> =
+        HashMap::from([(op.to_string(), Box::new(OffEngine) as Box<dyn TransformOp>)]);
+    let pipeline = Pipeline::new(Manifest::from_toml(manifest).unwrap()).unwrap();
     let writer = Writer::default();
     let report = pipeline
         .execute(&Reader(fc.clone()), &transforms, &writer)
-        .expect("the engine runs the filter, the registered one refuses to");
+        .expect("the engine runs the operation, the registered one refuses to");
     let counts = report.steps.iter().map(|s| s.feature_count).collect();
+    let out = writer.0.lock().unwrap().take().unwrap();
+    (out, counts)
+}
+
+/// the same collection filtered both ways, on the engine and directly
+fn both_paths(fc: FeatureCollection) -> (FeatureCollection, FeatureCollection, Vec<usize>) {
+    let (through_engine, counts) = through_engine(MANIFEST, "filter", &fc);
 
     let params = HashMap::from([
         ("field".into(), toml::Value::String("kind".into())),
         ("equals".into(), toml::Value::String("keep".into())),
     ]);
     let direct = FilterTransform.apply(&fc, &params).unwrap();
-    let through_engine = writer.0.lock().unwrap().take().unwrap();
     (through_engine, direct, counts)
 }
 
@@ -257,22 +281,97 @@ fn test_lines_on_the_tile_seams_come_back_whole() {
     assert_eq!(through_engine.len(), 4);
 
     for (got, want) in through_engine.features.iter().zip(&direct.features) {
-        let n = want.properties.get("n");
-        assert_eq!(
-            geometry::type_name(&got.geometry),
-            geometry::type_name(&want.geometry),
-            "feature {n:?} came back as {:?}",
-            got.geometry
-        );
-        assert_eq!(
-            geometry::coords(&got.geometry),
-            geometry::coords(&want.geometry),
-            "feature {n:?} lost or gained vertices"
-        );
-        assert_eq!(
-            length(&got.geometry),
-            length(&want.geometry),
-            "feature {n:?}"
-        );
+        let n = format!("feature {:?}", want.properties.get("n"));
+        same_geometry(&got.geometry, &want.geometry, &n);
+        assert_eq!(length(&got.geometry), length(&want.geometry), "{n}");
     }
+}
+
+const CLIP_MANIFEST: &str = r#"
+[project]
+name = "clip-parity"
+
+[[source]]
+name = "input"
+format = "geojson"
+path = "in.geojson"
+
+[[transform]]
+name = "clipped"
+input = "input"
+operation = "clip"
+min_x = 100.0
+min_y = 100.0
+max_x = 400.0
+max_y = 400.0
+
+[[sink]]
+name = "out"
+input = "clipped"
+format = "geojson"
+path = "out.geojson"
+"#;
+
+/// lines crossing the clip boundary and the tile seams at once, plus a point
+/// inside the box and one outside it
+fn clip_collection() -> FeatureCollection {
+    FeatureCollection::new(
+        vec![
+            feature(
+                FeatureGeometry::LineString(LineString::new(along(&[
+                    (0.0, 200.0),
+                    (512.0, 200.0),
+                ]))),
+                "keep",
+                0,
+            ),
+            feature(
+                FeatureGeometry::LineString(LineString::new(along(&[
+                    (300.0, 0.0),
+                    (300.0, 512.0),
+                ]))),
+                "keep",
+                1,
+            ),
+            feature(FeatureGeometry::Point(Point::new(200.0, 200.0)), "keep", 2),
+            feature(FeatureGeometry::Point(Point::new(450.0, 450.0)), "keep", 3),
+        ],
+        Some("EPSG:4326".into()),
+    )
+}
+
+/// `ClipTransform` and the engine's clip are the same code now, so the two
+/// paths agree on what survives and on its geometry
+#[test]
+fn test_engine_clip_matches_the_direct_clip() {
+    let fc = clip_collection();
+    let (through_engine, counts) = through_engine(CLIP_MANIFEST, "clip", &fc);
+
+    let params = HashMap::from([
+        ("min_x".into(), toml::Value::Float(100.0)),
+        ("min_y".into(), toml::Value::Float(100.0)),
+        ("max_x".into(), toml::Value::Float(400.0)),
+        ("max_y".into(), toml::Value::Float(400.0)),
+    ]);
+    let direct = ClipTransform::new().apply(&fc, &params).unwrap();
+
+    assert_eq!(direct.len(), 3, "the point outside the box is dropped");
+    assert_eq!(counts, vec![4, 3, 3], "and the engine drops it too");
+    assert_eq!(through_engine.len(), direct.len());
+    assert_eq!(through_engine.crs, direct.crs);
+    for (got, want) in through_engine.features.iter().zip(&direct.features) {
+        let n = format!("feature {:?}", want.properties.get("n"));
+        assert_eq!(got.properties, want.properties, "{n}");
+        same_geometry(&got.geometry, &want.geometry, &n);
+    }
+
+    // the lines really were cut, not carried through whole
+    assert_eq!(
+        ends(&through_engine.features[0].geometry),
+        Some((Coord::new(100.0, 200.0), Coord::new(400.0, 200.0)))
+    );
+    assert_eq!(
+        ends(&through_engine.features[1].geometry),
+        Some((Coord::new(300.0, 100.0), Coord::new(300.0, 400.0)))
+    );
 }

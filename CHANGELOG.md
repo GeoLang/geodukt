@@ -17,13 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A source feeding only sinks or operations the engine does not run stays off
   it, as does an operation the caller never registered, which still fails the
   run as an unknown operation. Manifests, the CLI and the REST API are
-  unchanged, and so are the per-step feature counts of every operation except
-  `clip`
-- Breaking: `clip` on the engine cuts lines at the boundary and drops points
-  outside it, where the in-memory clip returns lines and points untouched, so
-  a `clip` over lines or points reports fewer features than it used to. A
-  chain the engine does not run, such as one behind a `reproject`, still gets
-  the in-memory behaviour
+  unchanged, and an operation reports the same per-step feature count wherever
+  it runs
+- Breaking: `clip` cuts lines where they cross the boundary and drops points
+  outside it, where it used to pass both through untouched, so a clip over
+  lines or points now reports fewer features and less geometry than it did.
+  `ClipTransform` and the engine's clip both call topoi's `clip_to_boundary`,
+  so a chain gets the same answer whether or not the engine ran it, and
+  `POST /gp/clip` cuts the same way. A multi-polygon boundary is honoured
+  whole, where the old clip used only its first polygon
 - A polygon wide enough to cross engine tile seams comes back geometrically
   equal but not vertex for vertex: merging its fragments rebuilds the rings,
   which drops collinear vertices

@@ -273,9 +273,9 @@ run, pulled over the whole extent and merged back into whole features. Feature
 counts per step are the same either way, and a source with nothing mappable
 under it never goes near the engine.
 
-`clip` on the engine cuts lines at the boundary and drops points outside it.
-The in-memory `clip`, which a chain reaches once something like `reproject` has
-taken it off the engine, still passes lines and points through untouched.
+Both paths run the same geometry code, so an operation means the same thing
+wherever a chain happens to run it. `clip` intersects polygons, cuts lines at
+the boundary and drops points outside it, on the engine and off it alike.
 
 ## Architecture
 
