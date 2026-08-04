@@ -1,12 +1,12 @@
 //! A collection wide enough to tile many times over, filtered on the engine
-//! and filtered directly, compared feature by feature. The registry handed to
-//! `execute` is empty, so the run only succeeds on the engine path.
+//! and filtered directly, compared feature by feature. The `filter` handed to
+//! `execute` refuses to run, so a green run is one the engine carried.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 use geodukt_core::feature::{Feature, FeatureCollection, Properties, Value};
-use geodukt_core::geometry::{Coord, FeatureGeometry, LineString, Polygon, Ring};
+use geodukt_core::geometry::{self, Coord, FeatureGeometry, LineString, Polygon, Ring};
 use geodukt_core::manifest::{Manifest, Sink, Source};
 use geodukt_core::pipeline::{Pipeline, PipelineError, SinkWriter, SourceReader, TransformOp};
 use geodukt_transforms::filter::FilterTransform;
@@ -82,11 +82,50 @@ fn collection() -> FeatureCollection {
     )
 }
 
-struct Reader;
+/// lines on the tile seams the half-open membership rule decides. the extent
+/// is exactly two tiles each way, so the interior seams sit at x = 256 and
+/// y = 256 and the widened window's edges fall on tile boundaries too
+fn seam_collection() -> FeatureCollection {
+    let line = |a: (f64, f64), b: (f64, f64), n: i64| {
+        feature(
+            FeatureGeometry::LineString(LineString::new(along(&[a, b]))),
+            "keep",
+            n,
+        )
+    };
+    FeatureCollection::new(
+        vec![
+            line((256.0, 0.0), (256.0, 512.0), 0),
+            line((0.0, 256.0), (512.0, 256.0), 1),
+            line((512.0, 0.0), (512.0, 512.0), 2),
+            line((0.0, 0.0), (512.0, 0.0), 3),
+        ],
+        Some("EPSG:4326".into()),
+    )
+}
+
+struct Reader(FeatureCollection);
 
 impl SourceReader for Reader {
     fn read_source(&self, _source: &Source) -> Result<FeatureCollection, PipelineError> {
-        Ok(collection())
+        Ok(self.0.clone())
+    }
+}
+
+/// registered so the manifest names something real, and loud when it runs,
+/// which only happens when the routing did not send the filter to the engine
+struct OffEngine;
+
+impl TransformOp for OffEngine {
+    fn apply(
+        &self,
+        _input: &FeatureCollection,
+        _params: &HashMap<String, toml::Value>,
+    ) -> Result<FeatureCollection, PipelineError> {
+        Err(PipelineError::Transform {
+            name: "off_engine".into(),
+            message: "ran off the engine".into(),
+        })
     }
 }
 
@@ -138,22 +177,46 @@ fn ends(geometry: &FeatureGeometry) -> Option<(Coord, Coord)> {
     Some((*line.coords().first()?, *line.coords().last()?))
 }
 
-#[test]
-fn test_a_tiled_engine_filter_matches_the_direct_filter() {
+fn length(geometry: &FeatureGeometry) -> f64 {
+    let lines: Vec<&LineString> = match geometry {
+        FeatureGeometry::LineString(l) => vec![l],
+        FeatureGeometry::MultiLineString(mls) => mls.linestrings().iter().collect(),
+        _ => Vec::new(),
+    };
+    lines
+        .iter()
+        .flat_map(|l| l.coords().windows(2).map(|w| w[0].distance_to(&w[1])))
+        .sum()
+}
+
+/// the same collection filtered both ways: through `execute`, where the
+/// registry entry refuses to run so only the engine can produce a result, and
+/// through the transform directly
+fn both_paths(fc: FeatureCollection) -> (FeatureCollection, FeatureCollection, Vec<usize>) {
+    let transforms: HashMap<String, Box<dyn TransformOp>> = HashMap::from([(
+        "filter".to_string(),
+        Box::new(OffEngine) as Box<dyn TransformOp>,
+    )]);
     let pipeline = Pipeline::new(Manifest::from_toml(MANIFEST).unwrap()).unwrap();
     let writer = Writer::default();
     let report = pipeline
-        .execute(&Reader, &HashMap::new(), &writer)
-        .expect("the engine runs the filter without a registered operation");
-    let counts: Vec<usize> = report.steps.iter().map(|s| s.feature_count).collect();
-    assert_eq!(counts, vec![4, 3, 3], "counts are features, not fragments");
+        .execute(&Reader(fc.clone()), &transforms, &writer)
+        .expect("the engine runs the filter, the registered one refuses to");
+    let counts = report.steps.iter().map(|s| s.feature_count).collect();
 
     let params = HashMap::from([
         ("field".into(), toml::Value::String("kind".into())),
         ("equals".into(), toml::Value::String("keep".into())),
     ]);
-    let direct = FilterTransform.apply(&collection(), &params).unwrap();
+    let direct = FilterTransform.apply(&fc, &params).unwrap();
     let through_engine = writer.0.lock().unwrap().take().unwrap();
+    (through_engine, direct, counts)
+}
+
+#[test]
+fn test_a_tiled_engine_filter_matches_the_direct_filter() {
+    let (through_engine, direct, counts) = both_paths(collection());
+    assert_eq!(counts, vec![4, 3, 3], "counts are features, not fragments");
 
     assert_eq!(through_engine.len(), direct.len());
     assert_eq!(through_engine.crs, direct.crs);
@@ -183,4 +246,33 @@ fn test_a_tiled_engine_filter_matches_the_direct_filter() {
         through_engine.features[1].geometry,
         FeatureGeometry::LineString(_)
     ));
+}
+
+/// a line lying along a tile seam belongs to one side of it, so it comes back
+/// once rather than as two copies stitched into a multilinestring
+#[test]
+fn test_lines_on_the_tile_seams_come_back_whole() {
+    let (through_engine, direct, counts) = both_paths(seam_collection());
+    assert_eq!(counts, vec![4, 4, 4]);
+    assert_eq!(through_engine.len(), 4);
+
+    for (got, want) in through_engine.features.iter().zip(&direct.features) {
+        let n = want.properties.get("n");
+        assert_eq!(
+            geometry::type_name(&got.geometry),
+            geometry::type_name(&want.geometry),
+            "feature {n:?} came back as {:?}",
+            got.geometry
+        );
+        assert_eq!(
+            geometry::coords(&got.geometry),
+            geometry::coords(&want.geometry),
+            "feature {n:?} lost or gained vertices"
+        );
+        assert_eq!(
+            length(&got.geometry),
+            length(&want.geometry),
+            "feature {n:?}"
+        );
+    }
 }

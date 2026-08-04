@@ -15,7 +15,7 @@ use crate::dag::Node;
 use crate::feature::{Feature, FeatureCollection, Properties, Value};
 use crate::geometry::{self, Coord, MultiPolygon, Polygon, Ring};
 use crate::manifest::{Source, Transform};
-use crate::pipeline::PipelineError;
+use crate::pipeline::{PipelineError, TransformOp};
 
 /// chunk cache one run may hold in memory
 const CACHE_BUDGET: usize = 256 << 20;
@@ -42,11 +42,21 @@ pub struct EngineRouter {
 }
 
 impl EngineRouter {
-    pub fn new(order: &[&Node]) -> EngineRouter {
+    /// An operation the caller never registered is not one this pipeline can
+    /// run, so the engine does not quietly stand in for it and the run still
+    /// fails the way it always did.
+    pub fn new(
+        order: &[&Node],
+        registered: &HashMap<String, Box<dyn TransformOp>>,
+    ) -> EngineRouter {
         let transforms = order
             .iter()
             .filter_map(|node| match node {
-                Node::Transform(t) => Some((t.name.clone(), t.input.clone(), element(t).is_some())),
+                Node::Transform(t) => Some((
+                    t.name.clone(),
+                    t.input.clone(),
+                    registered.contains_key(&t.operation) && element(t).is_some(),
+                )),
                 _ => None,
             })
             .collect();
@@ -59,6 +69,12 @@ impl EngineRouter {
 
     pub fn is_resident(&self, name: &str) -> bool {
         self.owner.contains_key(name)
+    }
+
+    fn is_mappable(&self, name: &str) -> bool {
+        self.transforms
+            .iter()
+            .any(|(transform, _, mappable)| *mappable && transform == name)
     }
 
     /// Put a source and the mappable transforms under it on the engine, and
@@ -92,6 +108,9 @@ impl EngineRouter {
         let mut nodes = HashMap::from([(source.name.clone(), root)]);
         for node in order {
             let Node::Transform(t) = node else { continue };
+            if !self.is_mappable(&t.name) {
+                continue;
+            }
             let (Some(&parent), Some(el)) = (nodes.get(&t.input), element(t)) else {
                 continue;
             };
@@ -422,12 +441,43 @@ format = "geojson"
 path = "out.geojson"
 "#;
 
+    struct Op;
+
+    impl TransformOp for Op {
+        fn apply(
+            &self,
+            input: &FeatureCollection,
+            _params: &HashMap<String, toml::Value>,
+        ) -> Result<FeatureCollection, PipelineError> {
+            Ok(input.clone())
+        }
+    }
+
+    fn registry(names: &[&str]) -> HashMap<String, Box<dyn TransformOp>> {
+        names
+            .iter()
+            .map(|name| ((*name).to_string(), Box::new(Op) as Box<dyn TransformOp>))
+            .collect()
+    }
+
     /// residency over a manifest, with the source data the run would read
     fn residents(body: &str, fc: &FeatureCollection) -> Vec<String> {
+        residents_with(
+            body,
+            fc,
+            &registry(&["filter", "schema_map", "clip", "reproject"]),
+        )
+    }
+
+    fn residents_with(
+        body: &str,
+        fc: &FeatureCollection,
+        transforms: &HashMap<String, Box<dyn TransformOp>>,
+    ) -> Vec<String> {
         let manifest = manifest(body);
         let dag = Dag::from_manifest(&manifest).unwrap();
         let order = dag.topological_order().unwrap();
-        let mut router = EngineRouter::new(&order);
+        let mut router = EngineRouter::new(&order, transforms);
         for node in &order {
             if let Node::Source(s) = node {
                 router.admit_source(&order, s, fc).unwrap();
@@ -506,6 +556,14 @@ equals = 1979-05-27T07:32:00Z
         assert!(residents(&body, &collection()).is_empty());
     }
 
+    /// the engine does not stand in for an operation the caller never
+    /// registered, so a manifest naming one still fails the way it always did
+    #[test]
+    fn test_an_unregistered_operation_bypasses_the_engine() {
+        let body = format!("{FILTER}{SINK}");
+        assert!(residents_with(&body, &collection(), &registry(&["buffer"])).is_empty());
+    }
+
     #[test]
     fn test_a_non_finite_property_bypasses_the_engine() {
         let mut fc = collection();
@@ -575,7 +633,7 @@ path = "out.geojson"
         let manifest = manifest(&format!("{FILTER}{SINK}"));
         let dag = Dag::from_manifest(&manifest).unwrap();
         let order = dag.topological_order().unwrap();
-        let mut router = EngineRouter::new(&order);
+        let mut router = EngineRouter::new(&order, &registry(&["filter"]));
         let Node::Source(source) = order[0] else {
             panic!("the source comes first");
         };
@@ -614,7 +672,7 @@ path = "out.geojson"
         let manifest = manifest(&format!("{FILTER}{SINK}"));
         let dag = Dag::from_manifest(&manifest).unwrap();
         let order = dag.topological_order().unwrap();
-        let mut router = EngineRouter::new(&order);
+        let mut router = EngineRouter::new(&order, &registry(&["filter"]));
         let Node::Source(source) = order[0] else {
             panic!("the source comes first");
         };
@@ -647,7 +705,7 @@ path = "out.geojson"
         let manifest = manifest(&format!("{FILTER}{SINK}"));
         let dag = Dag::from_manifest(&manifest).unwrap();
         let order = dag.topological_order().unwrap();
-        let mut router = EngineRouter::new(&order);
+        let mut router = EngineRouter::new(&order, &registry(&["filter"]));
         let Node::Source(source) = order[0] else {
             panic!("the source comes first");
         };

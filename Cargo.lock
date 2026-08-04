@@ -722,7 +722,7 @@ dependencies = [
 [[package]]
 name = "geoplumb"
 version = "0.1.0"
-source = "git+https://github.com/GeoLang/geoplumb.git?branch=master#0ee58fd39cad1a8533fe05e4fc1d72a53c991684"
+source = "git+https://github.com/GeoLang/geoplumb.git?branch=master#f89a945621a988e544fdcf505e760b0859e0c0f7"
 dependencies = [
  "futures",
  "nubis-core",

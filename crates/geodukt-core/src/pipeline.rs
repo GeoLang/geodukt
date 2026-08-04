@@ -92,7 +92,7 @@ impl Pipeline {
             order: &order,
             data: HashMap::new(),
             report: ExecutionReport::default(),
-            router: EngineRouter::new(&order),
+            router: EngineRouter::new(&order, transforms),
         };
 
         for (i, node) in order.iter().enumerate() {

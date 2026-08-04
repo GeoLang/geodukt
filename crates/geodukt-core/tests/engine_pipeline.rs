@@ -1,5 +1,7 @@
-//! The engine path end to end. The registry handed to `execute` holds none of
-//! the mappable operations, so a run that succeeds is a run geoplumb carried.
+//! The engine path end to end. The mappable operations are registered, since
+//! routing an operation the caller never registered would hide a broken
+//! manifest, but their implementations refuse to run: a green run is a run
+//! geoplumb carried.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -70,6 +72,29 @@ impl TransformOp for Passthrough {
     }
 }
 
+/// registered so the manifest names something real, and loud when it is
+/// reached, which only happens when the routing sent the work the long way
+struct OffEngine;
+
+impl TransformOp for OffEngine {
+    fn apply(
+        &self,
+        _input: &FeatureCollection,
+        _params: &HashMap<String, toml::Value>,
+    ) -> Result<FeatureCollection, PipelineError> {
+        Err(PipelineError::Transform {
+            name: "off_engine".into(),
+            message: "ran off the engine".into(),
+        })
+    }
+}
+
+fn registry(ops: Vec<(&str, Box<dyn TransformOp>)>) -> HashMap<String, Box<dyn TransformOp>> {
+    ops.into_iter()
+        .map(|(name, op)| (name.to_string(), op))
+        .collect()
+}
+
 const HEAD: &str = r#"
 [project]
 name = "engine"
@@ -96,7 +121,7 @@ fn run(
 }
 
 #[test]
-fn test_a_mappable_head_runs_without_a_registered_operation() {
+fn test_a_mappable_head_runs_on_the_engine() {
     let toml = format!(
         r#"{HEAD}
 [[transform]]
@@ -121,7 +146,13 @@ path = "out.geojson"
 "#
     );
 
-    let (steps, writer) = run(&toml, HashMap::new());
+    let (steps, writer) = run(
+        &toml,
+        registry(vec![
+            ("filter", Box::new(OffEngine)),
+            ("schema_map", Box::new(OffEngine)),
+        ]),
+    );
     assert_eq!(
         steps,
         vec![
@@ -184,8 +215,10 @@ path = "out.geojson"
 "#
     );
 
-    let mut transforms: HashMap<String, Box<dyn TransformOp>> = HashMap::new();
-    transforms.insert("reproject".into(), Box::new(Passthrough));
+    let transforms = registry(vec![
+        ("reproject", Box::new(Passthrough)),
+        ("filter", Box::new(OffEngine)),
+    ]);
 
     let pipeline = Pipeline::new(Manifest::from_toml(&toml).unwrap()).unwrap();
     let failure = pipeline
@@ -193,12 +226,45 @@ path = "out.geojson"
         .unwrap_err();
     assert_eq!(failure.failed.as_ref().unwrap().name, "roads");
     assert!(
-        failure.error().to_string().contains("unknown operation"),
+        failure.error().to_string().contains("ran off the engine"),
         "{}",
         failure.error()
     );
     assert_eq!(failure.completed.len(), 2);
     assert_eq!(failure.not_run, vec!["out"]);
+}
+
+/// the engine runs an operation on the caller's behalf, never in place of an
+/// operation the caller never registered
+#[test]
+fn test_an_unregistered_operation_still_fails_the_run() {
+    let toml = format!(
+        r#"{HEAD}
+[[transform]]
+name = "roads"
+input = "input"
+operation = "filter"
+field = "kind"
+equals = "road"
+
+[[sink]]
+name = "out"
+input = "roads"
+format = "geojson"
+path = "out.geojson"
+"#
+    );
+
+    let pipeline = Pipeline::new(Manifest::from_toml(&toml).unwrap()).unwrap();
+    let failure = pipeline
+        .execute(&Reader, &HashMap::new(), &Writer::default())
+        .unwrap_err();
+    assert_eq!(failure.failed.as_ref().unwrap().name, "roads");
+    assert!(
+        failure.error().to_string().contains("unknown operation"),
+        "{}",
+        failure.error()
+    );
 }
 
 /// a source with nothing mappable under it never makes the round trip, so the
