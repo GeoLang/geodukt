@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `petgraph` moved to 0.8. The manifest DAG builds and sorts on the same
+  `DiGraph` and `toposort` shapes as before, so pipeline construction and
+  execution order are untouched
 - `sha2` moved to 0.11, whose digest output no longer formats itself as hex, so
   geodukt-core encodes the bytes itself. The hex strings are unchanged byte for
   byte, which golden tests now pin, so incremental state files and feature
