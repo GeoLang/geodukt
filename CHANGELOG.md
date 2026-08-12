@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `petgraph` moved to 0.8. The manifest DAG builds and sorts on the same
   `DiGraph` and `toposort` shapes as before, so pipeline construction and
   execution order are untouched
+- `rusqlite` moved to 0.40, so the SQLite the binary bundles is 3.53 rather
+  than 3.46. The run history and the GeoPackage reader and writer call the same
+  connection, statement and value APIs as before, so neither needed changing
 - `sha2` moved to 0.11, whose digest output no longer formats itself as hex, so
   geodukt-core encodes the bytes itself. The hex strings are unchanged byte for
   byte, which golden tests now pin, so incremental state files and feature
