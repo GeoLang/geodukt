@@ -132,6 +132,17 @@ async fn valid_editor_token_runs_and_records_the_subject() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(record["status"], "Completed");
     assert_eq!(record["sub"], "user-42");
+
+    let started = parse_rfc3339(&record, "started_at");
+    let finished = parse_rfc3339(&record, "finished_at");
+    assert!(started <= finished, "{record}");
+}
+
+fn parse_rfc3339(record: &serde_json::Value, field: &str) -> chrono::DateTime<chrono::FixedOffset> {
+    let stamp = record[field]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected {field} on {record}"));
+    chrono::DateTime::parse_from_rfc3339(stamp).unwrap()
 }
 
 #[tokio::test]

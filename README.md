@@ -235,14 +235,19 @@ Both outcomes return a run record, so a caller parses one shape either way. The
 
 ```json
 {"id": 0, "status": "Completed", "manifest_name": "city", "manifest": "<TOML>",
- "steps": [{"name": "parcels", "feature_count": 120, "status": "Completed"}]}
+ "steps": [{"name": "parcels", "feature_count": 120, "status": "Completed"}],
+ "started_at": "2026-08-12T09:14:02.417Z", "finished_at": "2026-08-12T09:14:05.902Z"}
 
 {"id": 1, "status": {"Failed": "Execution error: sink error for 'out': csv carries point geometry as lon/lat columns, cannot write a Polygon, ..."},
  "manifest_name": "doomed", "manifest": "<TOML>",
  "steps": [{"name": "polys", "feature_count": 1, "status": "Completed"},
            {"name": "out", "feature_count": 0, "status": {"Failed": "sink error for 'out': ..."}},
-           {"name": "report", "feature_count": 0, "status": "NotRun"}]}
+           {"name": "report", "feature_count": 0, "status": "NotRun"}],
+ "started_at": "2026-08-12T09:15:11.003Z", "finished_at": "2026-08-12T09:15:11.244Z"}
 ```
+
+`started_at` is read before the pipeline starts and `finished_at` when the run
+ends and the record is stored, both RFC 3339 in UTC.
 
 | outcome | status | body |
 |---------|--------|------|
@@ -280,6 +285,11 @@ comes back:
 A run belonging to someone else answers 404 rather than 403, so ids cannot be
 probed for which ones exist. Unset secret means no gate and no filter, the
 standalone single-user flow: nothing recorded a subject to filter by.
+
+The history is a sqlite database. `GEODUKT_RUNS_DB` names the file, which is
+created if it is not there, and the server needs write access to it and to its
+directory. Unset means an in-memory database, so a restart starts an empty
+history. Ids carry on from what the database already holds.
 
 ## Execution
 

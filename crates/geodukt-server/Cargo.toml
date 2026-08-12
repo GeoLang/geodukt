@@ -16,6 +16,8 @@ serde_json = "1"
 topoi-core = { git = "https://github.com/GeoLang/topoi.git", branch = "master" }
 toml = "0.8"
 jsonwebtoken = "9"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

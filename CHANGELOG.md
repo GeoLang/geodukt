@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- The run history is kept in sqlite instead of a vector that died with the
+  process, so `GET /runs` and `GET /runs/{id}` still answer after a restart.
+  `GEODUKT_RUNS_DB` names the database file, which is created if it is not
+  there, and unset means an in-memory database, the same single read and write
+  path either way. A row carries the run id and the caller's `sub` as columns,
+  which is what the two routes order and filter by, and the record itself as
+  JSON. Ids carry on from what is stored, so they stay insertion ordered across
+  restarts. A run whose record cannot be stored answers 500, where before there
+  was no way for recording to fail
 - `Pipeline::execute` runs the engine-mappable head of a pipeline on a
   [geoplumb](https://github.com/GeoLang/geoplumb) pull graph. A source whose
   data the engine can hold and whose next operation is `filter`, `schema_map`
@@ -46,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   producing output nobody asked for
 
 ### Added
+- Run records carry `started_at` and `finished_at`, RFC 3339 in UTC, read before
+  the pipeline starts and when the run ends and the record is stored. Failed
+  runs carry both too, so a client can order the history by time rather than by
+  id. Every other field of the record, and both routes' status codes and
+  filtering, are unchanged
 - `POST /validate`: check a manifest without running it, returning the step
   order and per-step details, or a problem tagged `toml`, `graph`, `operation`,
   or `format`

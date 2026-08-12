@@ -2,7 +2,10 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use geodukt_server::{RunRecord, StepStatus, create_router};
+use geodukt_server::auth::AuthConfig;
+use geodukt_server::{
+    RunRecord, RunStatus, RunStore, StepStatus, create_router, create_router_with_store,
+};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -35,12 +38,14 @@ async fn test_list_runs_empty() {
 #[tokio::test]
 async fn test_get_run_not_found() {
     let app = create_router();
-    let req = Request::builder()
-        .uri("/runs/999")
-        .body(Body::empty())
-        .unwrap();
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    for id in ["999", "18446744073709551615"] {
+        let req = Request::builder()
+            .uri(format!("/runs/{id}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{id}");
+    }
 }
 
 #[tokio::test]
@@ -650,7 +655,9 @@ fn test_old_record_without_step_status_deserializes() {
         "status": "Completed",
         "manifest_name": "legacy",
         "manifest": "[project]\nname = \"legacy\"\n",
-        "steps": [{"name": "src", "feature_count": 7}]
+        "steps": [{"name": "src", "feature_count": 7}],
+        "started_at": "2026-08-12T09:00:00.000Z",
+        "finished_at": "2026-08-12T09:00:01.000Z"
     }"#;
 
     let record: RunRecord = serde_json::from_str(old).unwrap();
@@ -784,6 +791,111 @@ async fn test_run_ids_keep_counting_across_failures() {
         let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(record["id"], expected_id);
     }
+}
+
+/// Runs a point through to a geojson sink, so the run completes.
+fn completing_manifest(dir: &std::path::Path) -> String {
+    let input = dir.join("in.geojson");
+    std::fs::write(
+        &input,
+        r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{},
+             "geometry":{"type":"Point","coordinates":[1,2]}}]}"#,
+    )
+    .unwrap();
+
+    format!(
+        r#"
+[project]
+name = "kept"
+
+[[source]]
+name = "pts"
+format = "geojson"
+path = "{input}"
+
+[[sink]]
+name = "out"
+input = "pts"
+format = "geojson"
+path = "{output}"
+"#,
+        input = input.display(),
+        output = dir.join("out.geojson").display()
+    )
+}
+
+/// A restart is a fresh router over the same database, and the run is still
+/// there with the times it was stamped with.
+#[tokio::test]
+async fn test_runs_outlive_the_router_that_recorded_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("runs.sqlite");
+    let database = database.to_str().unwrap().to_string();
+    let manifest = completing_manifest(dir.path());
+
+    let router = || {
+        create_router_with_store(
+            AuthConfig::new(None),
+            RunStore::open(Some(&database)).unwrap(),
+        )
+    };
+
+    let resp = router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/run")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"manifest": manifest}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let recorded: RunRecord = serde_json::from_slice(&bytes).unwrap();
+
+    let resp = router()
+        .oneshot(Request::builder().uri("/runs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let runs: Vec<RunRecord> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, 0);
+    assert_eq!(runs[0].manifest_name, "kept");
+    assert_eq!(runs[0].status, RunStatus::Completed);
+    assert_eq!(runs[0].manifest, manifest);
+    assert_eq!(runs[0].started_at, recorded.started_at);
+    assert_eq!(runs[0].finished_at, recorded.finished_at);
+
+    // the next run carries on from the stored ids
+    let resp = router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/run")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"manifest": manifest}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let second: RunRecord = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(second.id, 1);
 }
 
 #[tokio::test]

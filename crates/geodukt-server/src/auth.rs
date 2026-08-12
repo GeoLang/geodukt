@@ -169,11 +169,13 @@ pub enum RunVisibility {
 }
 
 impl RunVisibility {
-    /// Whether a run recorded for `sub` is visible.
-    pub fn covers(&self, sub: Option<&str>) -> bool {
+    /// The subject a run must carry to be visible, or `None` when every run is.
+    /// A run recorded with no subject is read only by a caller reading all of
+    /// them.
+    pub fn required_subject(&self) -> Option<&str> {
         match self {
-            RunVisibility::All => true,
-            RunVisibility::Own(id) => sub == Some(id.as_str()),
+            RunVisibility::All => None,
+            RunVisibility::Own(sub) => Some(sub),
         }
     }
 }
@@ -238,6 +240,9 @@ mod tests {
             visibility("editor"),
             Some(RunVisibility::Own("u1".to_string()))
         );
+        // what the history query filters on
+        assert_eq!(visibility("admin").unwrap().required_subject(), None);
+        assert_eq!(visibility("editor").unwrap().required_subject(), Some("u1"));
         assert_eq!(
             visibility("wizard"),
             Some(RunVisibility::Own("u1".to_string()))

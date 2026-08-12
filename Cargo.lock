@@ -692,10 +692,12 @@ name = "geodukt-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "geodukt-core",
  "geodukt-io",
  "geodukt-transforms",
  "jsonwebtoken",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

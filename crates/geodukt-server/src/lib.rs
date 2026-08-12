@@ -4,9 +4,8 @@
 
 pub mod auth;
 pub mod gp_tools;
+pub mod runs;
 pub mod validate;
-
-use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -18,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use auth::{AuthConfig, Caller};
+use runs::now_rfc3339;
+pub use runs::{RunRecord, RunStatus, RunStore, StepRecord, StepStatus};
 
 use geodukt_core::manifest::Manifest;
 use geodukt_core::pipeline::{Pipeline, StepResult};
@@ -27,74 +28,8 @@ use geodukt_transforms::registry::{OperationSpec, default_registry, operations};
 /// Shared server state.
 #[derive(Clone)]
 struct AppState {
-    runs: Arc<Mutex<Vec<RunRecord>>>,
+    runs: RunStore,
     auth: AuthConfig,
-}
-
-impl AppState {
-    /// Append a run attempt, completed or failed, and hand back the stored record.
-    fn record(
-        &self,
-        status: RunStatus,
-        manifest_name: String,
-        manifest: String,
-        steps: Vec<StepRecord>,
-        sub: Option<String>,
-    ) -> RunRecord {
-        let mut runs = self.runs.lock().unwrap();
-        let record = RunRecord {
-            id: runs.len(),
-            status,
-            manifest_name,
-            manifest,
-            steps,
-            sub,
-        };
-        runs.push(record.clone());
-        record
-    }
-}
-
-/// Record of a pipeline run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunRecord {
-    pub id: usize,
-    pub status: RunStatus,
-    pub manifest_name: String,
-    /// The manifest TOML exactly as submitted, so the run can be repeated.
-    pub manifest: String,
-    pub steps: Vec<StepRecord>,
-    /// Token subject that triggered the run, absent when auth is off.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sub: Option<String>,
-}
-
-/// Step record for API response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StepRecord {
-    pub name: String,
-    pub feature_count: usize,
-    /// Absent from records stored before failed runs kept their steps, and
-    /// those only ever came from runs that completed.
-    #[serde(default)]
-    pub status: StepStatus,
-}
-
-/// How a single step ended.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub enum StepStatus {
-    #[default]
-    Completed,
-    Failed(String),
-    NotRun,
-}
-
-/// Pipeline run status.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum RunStatus {
-    Running,
-    Completed,
-    Failed(String),
 }
 
 /// Request to trigger a pipeline run.
@@ -108,10 +43,17 @@ pub fn create_router() -> Router {
     create_router_with_auth(AuthConfig::from_env())
 }
 
-/// Create the server router with an explicit auth config.
+/// Create the server router with an explicit auth config, over the run history
+/// named by [`runs::RUNS_DB_ENV`].
 pub fn create_router_with_auth(auth: AuthConfig) -> Router {
+    let runs = RunStore::from_env().expect("could not open the run history database");
+    create_router_with_store(auth, runs)
+}
+
+/// Create the server router over an already opened run history.
+pub fn create_router_with_store(auth: AuthConfig, runs: RunStore) -> Router {
     let state = AppState {
-        runs: Arc::new(Mutex::new(Vec::new())),
+        runs,
         auth: auth.clone(),
     };
 
@@ -177,6 +119,9 @@ enum RunError {
     /// The pipeline ran and failed. The attempt is recorded, and the record
     /// comes back so the caller has the id and the reason.
     Failed(Box<RunRecord>),
+    /// The pipeline ran and the attempt could not be stored, so there is no
+    /// record to hand back and nothing `/runs` will show.
+    NotRecorded,
 }
 
 impl IntoResponse for RunError {
@@ -191,6 +136,11 @@ impl IntoResponse for RunError {
             RunError::Failed(record) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, Json(record)).into_response()
             }
+            RunError::NotRecorded => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not store the run record",
+            )
+                .into_response(),
         }
     }
 }
@@ -209,6 +159,7 @@ async fn trigger_run(
     validate::check_missing_parameters(&manifest).map_err(RunError::Rejected)?;
 
     let name = manifest.project.name;
+    let started_at = now_rfc3339();
 
     // a run reads whole files and computes inline, so it would hold an async
     // worker for as long as it takes
@@ -221,13 +172,18 @@ async fn trigger_run(
     match outcome {
         Ok(report) => {
             let steps = report.steps.iter().map(completed_step).collect();
-            Ok(Json(state.record(
-                RunStatus::Completed,
-                name,
-                req.manifest,
-                steps,
-                caller.sub(),
-            )))
+            let record = state
+                .runs
+                .record(
+                    RunStatus::Completed,
+                    name,
+                    req.manifest,
+                    steps,
+                    caller.sub(),
+                    started_at,
+                )
+                .map_err(|_| RunError::NotRecorded)?;
+            Ok(Json(record))
         }
         Err(failure) => {
             let mut steps: Vec<StepRecord> = failure.completed.iter().map(completed_step).collect();
@@ -244,13 +200,18 @@ async fn trigger_run(
                 status: StepStatus::NotRun,
             }));
 
-            Err(RunError::Failed(Box::new(state.record(
-                RunStatus::Failed(format!("Execution error: {}", failure.error())),
-                name,
-                req.manifest,
-                steps,
-                caller.sub(),
-            ))))
+            let record = state
+                .runs
+                .record(
+                    RunStatus::Failed(format!("Execution error: {}", failure.error())),
+                    name,
+                    req.manifest,
+                    steps,
+                    caller.sub(),
+                    started_at,
+                )
+                .map_err(|_| RunError::NotRecorded)?;
+            Err(RunError::Failed(Box::new(record)))
         }
     }
 }
@@ -271,13 +232,11 @@ async fn list_runs(
         .auth
         .run_visibility(&caller)
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let runs = state.runs.lock().unwrap();
-    Ok(Json(
-        runs.iter()
-            .filter(|run| visible.covers(run.sub.as_deref()))
-            .cloned()
-            .collect(),
-    ))
+    state
+        .runs
+        .list(visible.required_subject())
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn get_run(
@@ -289,11 +248,11 @@ async fn get_run(
         .auth
         .run_visibility(&caller)
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let runs = state.runs.lock().unwrap();
     // another caller's run answers 404 like a missing one, so ids cannot be probed
-    runs.get(id)
-        .filter(|run| visible.covers(run.sub.as_deref()))
-        .cloned()
+    state
+        .runs
+        .get(id, visible.required_subject())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
 }
