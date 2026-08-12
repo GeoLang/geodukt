@@ -55,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Failed runs are recorded like completed ones, so `/runs` and `/runs/{id}` show
   them. `POST /run` answers a failure with 422 and the run record, whose `status`
   is `{"Failed": "<reason>"}`. The success response is unchanged
+- The run history is gated when `PLATFORM_JWT_SECRET` is set: `GET /runs` and
+  `GET /runs/{id}` need a platform JWT of any role, an admin reads every
+  caller's runs, and every other role reads only the runs recorded for its own
+  `sub`, with someone else's run answering 404. Without the secret both routes
+  stay open and unfiltered, as `POST /run` does
 
 - Declarative pipeline manifest (geodukt.toml) with TOML parsing
 - DAG execution engine with topological sorting (petgraph)

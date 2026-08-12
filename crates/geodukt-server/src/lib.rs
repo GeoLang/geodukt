@@ -28,6 +28,7 @@ use geodukt_transforms::registry::{OperationSpec, default_registry, operations};
 #[derive(Clone)]
 struct AppState {
     runs: Arc<Mutex<Vec<RunRecord>>>,
+    auth: AuthConfig,
 }
 
 impl AppState {
@@ -111,6 +112,7 @@ pub fn create_router() -> Router {
 pub fn create_router_with_auth(auth: AuthConfig) -> Router {
     let state = AppState {
         runs: Arc::new(Mutex::new(Vec::new())),
+        auth: auth.clone(),
     };
 
     Router::new()
@@ -119,10 +121,19 @@ pub fn create_router_with_auth(auth: AuthConfig) -> Router {
         .route("/validate", post(validate_manifest))
         .route(
             "/run",
-            post(trigger_run).layer(from_fn_with_state(auth, auth::require_run_access)),
+            post(trigger_run).layer(from_fn_with_state(auth.clone(), auth::require_run_access)),
         )
-        .route("/runs", get(list_runs))
-        .route("/runs/{id}", get(get_run))
+        .route(
+            "/runs",
+            get(list_runs).layer(from_fn_with_state(
+                auth.clone(),
+                auth::require_history_access,
+            )),
+        )
+        .route(
+            "/runs/{id}",
+            get(get_run).layer(from_fn_with_state(auth, auth::require_history_access)),
+        )
         .nest("/gp", gp_tools::gp_routes().with_state(()))
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -252,17 +263,39 @@ fn completed_step(step: &StepResult) -> StepRecord {
     }
 }
 
-async fn list_runs(State(state): State<AppState>) -> Json<Vec<RunRecord>> {
+async fn list_runs(
+    State(state): State<AppState>,
+    caller: Caller,
+) -> Result<Json<Vec<RunRecord>>, StatusCode> {
+    let visible = state
+        .auth
+        .run_visibility(&caller)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
     let runs = state.runs.lock().unwrap();
-    Json(runs.clone())
+    Ok(Json(
+        runs.iter()
+            .filter(|run| visible.covers(run.sub.as_deref()))
+            .cloned()
+            .collect(),
+    ))
 }
 
 async fn get_run(
     State(state): State<AppState>,
+    caller: Caller,
     axum::extract::Path(id): axum::extract::Path<usize>,
 ) -> Result<Json<RunRecord>, StatusCode> {
+    let visible = state
+        .auth
+        .run_visibility(&caller)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
     let runs = state.runs.lock().unwrap();
-    runs.get(id).cloned().map(Json).ok_or(StatusCode::NOT_FOUND)
+    // another caller's run answers 404 like a missing one, so ids cannot be probed
+    runs.get(id)
+        .filter(|run| visible.covers(run.sub.as_deref()))
+        .cloned()
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 /// Start the server on the given address.

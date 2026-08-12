@@ -4,10 +4,12 @@
 //! secret, the same shape ptolemy and tiletopia validate, so one token works
 //! across services.
 //!
-//! Only `POST /run` is gated: it reads and writes files the manifest names, so
-//! it needs an identity to record and a role to check. `/validate`,
-//! `/operations` and `/health` have no side effects and stay open, because
-//! headless planning and the eval harness call them without a token.
+//! `POST /run` is gated on the editor or admin role: it reads and writes files
+//! the manifest names, so it needs an identity to record and a role to check.
+//! The run history, `GET /runs` and `GET /runs/{id}`, needs a valid token of any
+//! role, and the subject each record carries decides which of them come back.
+//! `/validate`, `/operations` and `/health` have no side effects and stay open,
+//! because headless planning and the eval harness call them without a token.
 
 use axum::Json;
 use axum::extract::{FromRequestParts, Request, State};
@@ -32,6 +34,12 @@ impl Claims {
     /// Unknown role strings grant nothing, so a typo cannot open a run.
     pub fn can_run(&self) -> bool {
         matches!(self.role.as_str(), "admin" | "editor")
+    }
+
+    /// The instance-wide administrator, the role that reads other callers'
+    /// runs. Same string ptolemy, tiletopia and collecta admit.
+    pub fn can_admin(&self) -> bool {
+        self.role == "admin"
     }
 }
 
@@ -72,6 +80,29 @@ fn deny(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({"error": message}))).into_response()
 }
 
+/// The bearer token's claims, or the status and message to deny with.
+fn verify(request: &Request, secret: &str) -> Result<Claims, (StatusCode, &'static str)> {
+    let token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|t| !t.is_empty());
+
+    let Some(token) = token else {
+        return Err((StatusCode::UNAUTHORIZED, "missing bearer token"));
+    };
+
+    // the decode error is not echoed back: it separates "expired" from "bad
+    // signature", which helps an attacker more than a caller
+    let key = DecodingKey::from_secret(secret.as_bytes());
+    let Ok(data) = decode::<Claims>(token, &key, &Validation::default()) else {
+        return Err((StatusCode::UNAUTHORIZED, "invalid or expired token"));
+    };
+
+    Ok(data.claims)
+}
+
 /// Require a valid token with role `editor` or `admin`. Passes everything
 /// through when no secret is configured.
 pub async fn require_run_access(
@@ -83,29 +114,38 @@ pub async fn require_run_access(
         return next.run(request).await;
     };
 
-    let token = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .filter(|t| !t.is_empty());
-
-    let Some(token) = token else {
-        return deny(StatusCode::UNAUTHORIZED, "missing bearer token");
+    let claims = match verify(&request, secret) {
+        Ok(claims) => claims,
+        Err((status, message)) => return deny(status, message),
     };
 
-    // the decode error is not echoed back: it separates "expired" from "bad
-    // signature", which helps an attacker more than a caller
-    let key = DecodingKey::from_secret(secret.as_bytes());
-    let Ok(data) = decode::<Claims>(token, &key, &Validation::default()) else {
-        return deny(StatusCode::UNAUTHORIZED, "invalid or expired token");
-    };
-
-    if !data.claims.can_run() {
+    if !claims.can_run() {
         return deny(StatusCode::FORBIDDEN, "editor or admin role required");
     }
 
-    request.extensions_mut().insert(data.claims);
+    request.extensions_mut().insert(claims);
+    next.run(request).await
+}
+
+/// Require a valid token, any role. The run history names callers, so reading it
+/// needs an identity, and [`AuthConfig::run_visibility`] narrows that identity to
+/// the records it may see. Passes everything through when no secret is
+/// configured.
+pub async fn require_history_access(
+    State(config): State<AuthConfig>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let Some(secret) = config.secret.as_deref() else {
+        return next.run(request).await;
+    };
+
+    let claims = match verify(&request, secret) {
+        Ok(claims) => claims,
+        Err((status, message)) => return deny(status, message),
+    };
+
+    request.extensions_mut().insert(claims);
     next.run(request).await
 }
 
@@ -117,6 +157,42 @@ impl Caller {
     /// Subject to record on the run, or `None` when nothing was verified.
     pub fn sub(&self) -> Option<String> {
         self.0.as_ref().map(|c| c.sub.clone())
+    }
+}
+
+/// Which recorded runs a caller may read.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunVisibility {
+    All,
+    /// Only runs recorded for this subject.
+    Own(String),
+}
+
+impl RunVisibility {
+    /// Whether a run recorded for `sub` is visible.
+    pub fn covers(&self, sub: Option<&str>) -> bool {
+        match self {
+            RunVisibility::All => true,
+            RunVisibility::Own(id) => sub == Some(id.as_str()),
+        }
+    }
+}
+
+impl AuthConfig {
+    /// What of the run history this caller reads. The whole history only with
+    /// the gate off, where no run carries a subject to filter by, or for an
+    /// instance admin: every other role, known or not, reads its own runs.
+    /// `None` means the gate is on and nothing was verified, which is a request
+    /// that skipped [`require_history_access`].
+    pub fn run_visibility(&self, caller: &Caller) -> Option<RunVisibility> {
+        if !self.enabled() {
+            return Some(RunVisibility::All);
+        }
+        let claims = caller.0.as_ref()?;
+        if claims.can_admin() {
+            return Some(RunVisibility::All);
+        }
+        Some(RunVisibility::Own(claims.sub.clone()))
     }
 }
 
@@ -145,6 +221,34 @@ mod tests {
         // wrong case is not a known role
         assert!(!claims("Editor").can_run());
         assert!(!claims("").can_run());
+    }
+
+    #[test]
+    fn only_admin_reads_other_callers_runs() {
+        let config = AuthConfig::new(Some("0123456789abcdef".into()));
+        let visibility = |role: &str| {
+            config.run_visibility(&Caller(Some(Claims {
+                sub: "u1".into(),
+                exp: 0,
+                role: role.into(),
+            })))
+        };
+        assert_eq!(visibility("admin"), Some(RunVisibility::All));
+        assert_eq!(
+            visibility("editor"),
+            Some(RunVisibility::Own("u1".to_string()))
+        );
+        assert_eq!(
+            visibility("wizard"),
+            Some(RunVisibility::Own("u1".to_string()))
+        );
+        // gate on, nothing verified: no run is visible
+        assert_eq!(config.run_visibility(&Caller(None)), None);
+        // gate off: no subject is recorded to filter by
+        assert_eq!(
+            AuthConfig::new(None).run_visibility(&Caller(None)),
+            Some(RunVisibility::All)
+        );
     }
 
     #[test]

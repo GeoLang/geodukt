@@ -316,7 +316,7 @@ geodukt serve --bind 127.0.0.1:8080</code></pre>
                 <tr><td>GET</td><td><code>/operations</code></td><td>Every operation and format a manifest may name</td></tr>
                 <tr><td>POST</td><td><code>/validate</code></td><td>Parse and check a manifest, return the plan, run nothing</td></tr>
                 <tr><td>POST</td><td><code>/run</code></td><td>Execute a manifest and record the attempt, successful or not</td></tr>
-                <tr><td>GET</td><td><code>/runs</code></td><td>Every recorded run, including failed ones</td></tr>
+                <tr><td>GET</td><td><code>/runs</code></td><td>The recorded runs the caller may read, including failed ones</td></tr>
                 <tr><td>GET</td><td><code>/runs/{id}</code></td><td>One run, including the manifest it ran</td></tr>
                 <tr><td>GET</td><td><code>/gp/catalog</code></td><td>The subset of operations exposed as one-shot tools</td></tr>
                 <tr><td>POST</td><td><code>/gp/{tool}</code></td><td>Run one operation over GeoJSON in the request body</td></tr>
@@ -352,6 +352,13 @@ curl -X POST localhost:8080/validate \
                 <code>{"Failed": "&lt;reason&gt;"}</code>, and the record stays in <code>/runs</code> with
                 the manifest that produced it. 422 rather than 500 because the manifest was sound and it
                 was the work it described that could not be carried out, so retrying it will not help.
+            </p>
+            <p>
+                With <code>PLATFORM_JWT_SECRET</code> set, <code>/run</code> needs a platform JWT with
+                the editor or admin role and records the caller's <code>sub</code>, and
+                <code>/runs</code> needs a token of any role: an admin reads every caller's runs, every
+                other role reads only its own, and someone else's run is a 404. Unset means no gate,
+                the standalone single-user flow.
             </p>
         </section>
 

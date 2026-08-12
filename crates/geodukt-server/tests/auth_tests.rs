@@ -1,4 +1,4 @@
-//! Tests for the JWT gate on POST /run.
+//! Tests for the JWT gate on POST /run and on the run history.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -8,7 +8,7 @@ use tower::ServiceExt;
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";
 
-fn token(role: &str, ttl_secs: i64) -> String {
+fn token_for(sub: &str, role: &str, ttl_secs: i64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -16,13 +16,17 @@ fn token(role: &str, ttl_secs: i64) -> String {
     jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
         &Claims {
-            sub: "user-42".into(),
+            sub: sub.into(),
             exp: (now + ttl_secs) as usize,
             role: role.into(),
         },
         &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
     )
     .unwrap()
+}
+
+fn token(role: &str, ttl_secs: i64) -> String {
+    token_for("user-42", role, ttl_secs)
 }
 
 /// Runs a point through to a geojson sink, so a permitted run completes.
@@ -72,6 +76,14 @@ fn run_request(manifest: &str, bearer: Option<&str>) -> Request<Body> {
         .unwrap()
 }
 
+fn get_request(uri: &str, bearer: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().uri(uri);
+    if let Some(bearer) = bearer {
+        builder = builder.header("authorization", format!("Bearer {bearer}"));
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
 async fn send(app: axum::Router, req: Request<Body>) -> (StatusCode, serde_json::Value) {
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
@@ -84,6 +96,31 @@ async fn send(app: axum::Router, req: Request<Body>) -> (StatusCode, serde_json:
 
 fn gated() -> axum::Router {
     create_router_with_auth(AuthConfig::new(Some(SECRET.into())))
+}
+
+/// A gated router holding run 0 by `user-a` and run 1 by `user-b`.
+async fn history_of_two_users(dir: &std::path::Path) -> axum::Router {
+    let app = gated();
+    for sub in ["user-a", "user-b"] {
+        let user_dir = dir.join(sub);
+        std::fs::create_dir(&user_dir).unwrap();
+        let manifest = working_manifest(&user_dir);
+        let (status, _) = send(
+            app.clone(),
+            run_request(&manifest, Some(&token_for(sub, "editor", 60))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    app
+}
+
+fn subjects(runs: &serde_json::Value) -> Vec<String> {
+    runs.as_array()
+        .unwrap_or_else(|| panic!("expected a run list, got {runs}"))
+        .iter()
+        .map(|run| run["sub"].as_str().unwrap_or("<none>").to_string())
+        .collect()
 }
 
 #[tokio::test]
@@ -213,6 +250,96 @@ async fn read_only_endpoints_stay_open_when_gated() {
         ))
         .unwrap();
     let (status, _) = send(gated(), req).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn run_history_without_a_token_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = history_of_two_users(dir.path()).await;
+
+    for uri in ["/runs", "/runs/0"] {
+        let (status, body) = send(app.clone(), get_request(uri, None)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+        assert_eq!(body["error"], "missing bearer token");
+    }
+}
+
+#[tokio::test]
+async fn expired_token_cannot_read_the_run_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = history_of_two_users(dir.path()).await;
+
+    let (status, _) = send(
+        app,
+        get_request("/runs", Some(&token_for("user-a", "editor", -3600))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_caller_sees_only_its_own_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = history_of_two_users(dir.path()).await;
+    let bearer = token_for("user-a", "editor", 60);
+
+    let (status, runs) = send(app.clone(), get_request("/runs", Some(&bearer))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(subjects(&runs), ["user-a"]);
+    assert_eq!(runs[0]["id"], 0);
+
+    let (status, _) = send(app, get_request("/runs/1", Some(&bearer))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_sees_all_callers_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = history_of_two_users(dir.path()).await;
+    let bearer = token_for("the-admin", "admin", 60);
+
+    let (status, runs) = send(app.clone(), get_request("/runs", Some(&bearer))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(subjects(&runs), ["user-a", "user-b"]);
+
+    let (status, run) = send(app, get_request("/runs/1", Some(&bearer))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(run["sub"], "user-b");
+}
+
+/// A role the gate does not know reads its own runs, never everyone's.
+#[tokio::test]
+async fn unknown_role_sees_its_own_runs_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = history_of_two_users(dir.path()).await;
+
+    for role in ["viewer", "auditor", "Admin", ""] {
+        let bearer = token_for("user-a", role, 60);
+        let (status, runs) = send(app.clone(), get_request("/runs", Some(&bearer))).await;
+        assert_eq!(status, StatusCode::OK, "{role}");
+        assert_eq!(subjects(&runs), ["user-a"], "{role}");
+
+        let (status, _) = send(app.clone(), get_request("/runs/1", Some(&bearer))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{role}");
+    }
+}
+
+/// No secret configured: the history stays open, like /run.
+#[tokio::test]
+async fn dev_mode_reads_the_history_without_a_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+    let app = create_router_with_auth(AuthConfig::new(None));
+
+    let (status, _) = send(app.clone(), run_request(&manifest, None)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, runs) = send(app.clone(), get_request("/runs", None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(runs.as_array().unwrap().len(), 1);
+
+    let (status, _) = send(app, get_request("/runs/0", None)).await;
     assert_eq!(status, StatusCode::OK);
 }
 

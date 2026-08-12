@@ -136,7 +136,7 @@ or an agent, composes manifests and wants to check them before running.
 | GET | `/operations` | every operation and format a manifest may name |
 | POST | `/validate` | parse and check a manifest, return the plan, run nothing |
 | POST | `/run` | execute a manifest and record the run |
-| GET | `/runs` | every recorded run |
+| GET | `/runs` | the recorded runs the caller may read |
 | GET | `/runs/{id}` | one run, including the manifest it ran |
 | GET | `/gp/catalog` | the subset of operations exposed as one-shot tools |
 | POST | `/gp/{tool}` | run one operation over GeoJSON in the request body |
@@ -261,6 +261,25 @@ A failed record keeps its steps: the ones that finished are `Completed` with
 their feature counts, the one that died carries its own error, and the ones the
 run never reached are `NotRun`. Records stored before steps had a status read
 back as `Completed`.
+
+### GET /runs and GET /runs/{id}
+
+`/runs` answers with an array of run records, oldest first, and `/runs/{id}`
+with one, both in the shape `POST /run` returns. Neither takes a parameter.
+
+A record names the caller who ran it, so with `PLATFORM_JWT_SECRET` set both
+routes need a platform JWT of any role, and what the token holds decides what
+comes back:
+
+| token | sees |
+|-------|------|
+| role `admin` | every caller's runs |
+| any other role, known or not | only runs whose `sub` matches the token's |
+| missing, expired, or signed with another secret | nothing, 401 |
+
+A run belonging to someone else answers 404 rather than 403, so ids cannot be
+probed for which ones exist. Unset secret means no gate and no filter, the
+standalone single-user flow: nothing recorded a subject to filter by.
 
 ## Execution
 
