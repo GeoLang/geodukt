@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::feature::{Feature, FeatureCollection, Value};
+use crate::hex;
 
 /// The type of change detected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,7 +125,7 @@ impl CdcDetector {
         for (k, v) in props {
             hasher.update(format!("{k}={v:?}").as_bytes());
         }
-        format!("{:x}", hasher.finalize())
+        hex::encode_lowercase(&hasher.finalize())
     }
 
     fn index_by_key<'a>(&self, fc: &'a FeatureCollection) -> HashMap<String, &'a Feature> {

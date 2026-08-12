@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `sha2` moved to 0.11, whose digest output no longer formats itself as hex, so
+  geodukt-core encodes the bytes itself. The hex strings are unchanged byte for
+  byte, which golden tests now pin, so incremental state files and feature
+  hashes written by an older build still match what this build computes
 - The run history is kept in sqlite instead of a vector that died with the
   process, so `GET /runs` and `GET /runs/{id}` still answer after a restart.
   `GEODUKT_RUNS_DB` names the database file, which is created if it is not

@@ -1,5 +1,6 @@
 //! Incremental processing — hash-based change detection.
 
+use crate::hex;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -70,7 +71,7 @@ fn hash_file(path: &str) -> String {
         Ok(content) => {
             let mut hasher = Sha256::new();
             hasher.update(&content);
-            format!("{:x}", hasher.finalize())
+            hex::encode_lowercase(&hasher.finalize())
         }
         Err(_) => String::new(),
     }
@@ -80,7 +81,7 @@ fn hash_file(path: &str) -> String {
 pub fn hash_bytes(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
-    format!("{:x}", hasher.finalize())
+    hex::encode_lowercase(&hasher.finalize())
 }
 
 #[cfg(test)]
