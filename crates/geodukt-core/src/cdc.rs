@@ -230,6 +230,21 @@ mod tests {
     }
 
     #[test]
+    fn test_feature_hash_golden() {
+        let feature = Feature {
+            geometry: FeatureGeometry::Point(Point::new(1.5, -2.25)),
+            properties: HashMap::from([
+                ("id".to_string(), Value::Integer(42)),
+                ("name".to_string(), Value::String("golden".to_string())),
+            ]),
+        };
+        assert_eq!(
+            CdcDetector::feature_hash(&feature),
+            "f9501665c9a7b1806e823c055ec0c7372b4025c4242ece04a99c20f117c01ea7"
+        );
+    }
+
+    #[test]
     fn test_feature_hash() {
         let f1 = make_feature(1, "a");
         let f2 = make_feature(1, "b");

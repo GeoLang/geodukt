@@ -98,6 +98,26 @@ mod tests {
         assert_eq!(h1.len(), 64); // SHA-256 hex
     }
 
+    // inputs picked so each digest holds a byte below 0x10, which catches a dropped zero pad
+    #[test]
+    fn test_hash_file_golden() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(b"geodukt incremental golden input 1")
+            .unwrap();
+        assert_eq!(
+            hash_file(tmp.path().to_str().unwrap()),
+            "394526f6803c691ceb0b79928793a7e9046e18fd9c61d5bccadf5538286104c2"
+        );
+    }
+
+    #[test]
+    fn test_hash_bytes_golden() {
+        assert_eq!(
+            hash_bytes(b"geodukt hash_bytes golden input 1"),
+            "d2e11e0f20c653e5109338cdd2b35946b08a44748a9a8b0a5a9d554fa4321619"
+        );
+    }
+
     #[test]
     fn test_incremental_state() {
         let mut state = IncrementalState::new();
