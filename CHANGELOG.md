@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- sqlite hands out run ids instead of the server picking them with
+  `MAX(id) + 1`, which two processes on one database file could read before
+  either had inserted, so both wrote the same id and the loser answered 500. A
+  file-backed history also opens in WAL with a busy timeout, so a second writer
+  waits its turn rather than failing on the spot. Ids now start at 1 rather than
+  0, since that is where sqlite starts counting; an existing history keeps its
+  ids and carries on from the highest one
 - `petgraph` moved to 0.8. The manifest DAG builds and sorts on the same
   `DiGraph` and `toposort` shapes as before, so pipeline construction and
   execution order are untouched

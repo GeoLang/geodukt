@@ -446,7 +446,7 @@ path = "{output}"
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/runs/0")
+                .uri("/runs/1")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -457,7 +457,7 @@ path = "{output}"
         .await
         .unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(stored["id"], 0);
+    assert_eq!(stored["id"], 1);
     assert_eq!(stored["manifest"], manifest);
 
     // the stored text is a manifest the validator accepts, so it is replayable
@@ -573,7 +573,7 @@ async fn test_failed_run_returns_422_with_the_record() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
     // the failure body is a run record, so a caller parses one shape either way
-    assert_eq!(record["id"], 0);
+    assert_eq!(record["id"], 1);
     assert_eq!(record["manifest_name"], "doomed");
 
     // the run got as far as reading the source, and died on the sink
@@ -694,7 +694,7 @@ async fn test_failed_run_is_listed_and_replayable() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/runs/0")
+                .uri("/runs/1")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -718,7 +718,7 @@ async fn test_failed_run_is_listed_and_replayable() {
         .unwrap();
     let runs: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0]["id"], 0);
+    assert_eq!(runs[0]["id"], 1);
 
     // the stored manifest still parses, so the failure can be reproduced
     let (status, _) = post("/validate", serde_json::json!({"manifest": manifest})).await;
@@ -770,7 +770,7 @@ async fn test_run_ids_keep_counting_across_failures() {
     let failing = failing_manifest(dir.path());
     let app = create_router();
 
-    for expected_id in 0..2 {
+    for expected_id in 1..3 {
         let resp = app
             .clone()
             .oneshot(
@@ -870,7 +870,7 @@ async fn test_runs_outlive_the_router_that_recorded_them() {
         .unwrap();
     let runs: Vec<RunRecord> = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].id, 0);
+    assert_eq!(runs[0].id, 1);
     assert_eq!(runs[0].manifest_name, "kept");
     assert_eq!(runs[0].status, RunStatus::Completed);
     assert_eq!(runs[0].manifest, manifest);
@@ -895,7 +895,7 @@ async fn test_runs_outlive_the_router_that_recorded_them() {
         .await
         .unwrap();
     let second: RunRecord = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(second.id, 1);
+    assert_eq!(second.id, 2);
 }
 
 #[tokio::test]

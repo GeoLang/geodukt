@@ -269,7 +269,7 @@ async fn run_history_without_a_token_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let app = history_of_two_users(dir.path()).await;
 
-    for uri in ["/runs", "/runs/0"] {
+    for uri in ["/runs", "/runs/1"] {
         let (status, body) = send(app.clone(), get_request(uri, None)).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
         assert_eq!(body["error"], "missing bearer token");
@@ -298,9 +298,9 @@ async fn a_caller_sees_only_its_own_runs() {
     let (status, runs) = send(app.clone(), get_request("/runs", Some(&bearer))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(subjects(&runs), ["user-a"]);
-    assert_eq!(runs[0]["id"], 0);
+    assert_eq!(runs[0]["id"], 1);
 
-    let (status, _) = send(app, get_request("/runs/1", Some(&bearer))).await;
+    let (status, _) = send(app, get_request("/runs/2", Some(&bearer))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -314,7 +314,7 @@ async fn admin_sees_all_callers_runs() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(subjects(&runs), ["user-a", "user-b"]);
 
-    let (status, run) = send(app, get_request("/runs/1", Some(&bearer))).await;
+    let (status, run) = send(app, get_request("/runs/2", Some(&bearer))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(run["sub"], "user-b");
 }
@@ -331,7 +331,7 @@ async fn unknown_role_sees_its_own_runs_only() {
         assert_eq!(status, StatusCode::OK, "{role}");
         assert_eq!(subjects(&runs), ["user-a"], "{role}");
 
-        let (status, _) = send(app.clone(), get_request("/runs/1", Some(&bearer))).await;
+        let (status, _) = send(app.clone(), get_request("/runs/2", Some(&bearer))).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{role}");
     }
 }
@@ -350,7 +350,7 @@ async fn dev_mode_reads_the_history_without_a_token() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(runs.as_array().unwrap().len(), 1);
 
-    let (status, _) = send(app, get_request("/runs/0", None)).await;
+    let (status, _) = send(app, get_request("/runs/1", None)).await;
     assert_eq!(status, StatusCode::OK);
 }
 

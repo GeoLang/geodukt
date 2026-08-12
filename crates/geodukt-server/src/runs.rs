@@ -5,6 +5,7 @@
 //! JSON, because nothing queries inside it.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use rusqlite::types::Type;
@@ -14,6 +15,9 @@ use serde::{Deserialize, Serialize};
 /// Env var naming the sqlite file the run history is kept in. Unset means an
 /// in-memory database, so a restart starts an empty history.
 pub const RUNS_DB_ENV: &str = "GEODUKT_RUNS_DB";
+
+/// How long a write waits for another process to finish before giving up.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Record of a pipeline run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,7 +83,15 @@ impl RunStore {
 
     pub fn open(path: Option<&str>) -> rusqlite::Result<Self> {
         let connection = match path {
-            Some(path) => Connection::open(path)?,
+            Some(path) => {
+                let connection = Connection::open(path)?;
+                // a file can be open in more than one process, so readers must
+                // not block the writer and a writer must wait its turn rather
+                // than fail on the spot
+                connection.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+                connection.busy_timeout(BUSY_TIMEOUT)?;
+                connection
+            }
             None => Connection::open_in_memory()?,
         };
         connection.execute(
@@ -107,12 +119,17 @@ impl RunStore {
         started_at: String,
     ) -> rusqlite::Result<RunRecord> {
         let connection = self.connection.lock().unwrap();
-        let id: usize =
-            connection.query_row("SELECT COALESCE(MAX(id) + 1, 0) FROM runs", [], |row| {
-                row.get(0)
-            })?;
+        // sqlite hands out the id, so two processes writing to one file cannot
+        // pick the same one. The record carries its id, which is only known
+        // once the row exists, so the row is written and then filled in.
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO runs (sub, record) VALUES (?1, '')",
+            params![sub],
+        )?;
+        let row_id = transaction.last_insert_rowid();
         let record = RunRecord {
-            id,
+            id: usize::try_from(row_id).unwrap_or(usize::MAX),
             status,
             manifest_name,
             manifest,
@@ -121,10 +138,11 @@ impl RunStore {
             finished_at: now_rfc3339(),
             sub,
         };
-        connection.execute(
-            "INSERT INTO runs (id, sub, record) VALUES (?1, ?2, ?3)",
-            params![id, record.sub, encode(&record)?],
+        transaction.execute(
+            "UPDATE runs SET record = ?1 WHERE id = ?2",
+            params![encode(&record)?, row_id],
         )?;
+        transaction.commit()?;
         Ok(record)
     }
 
@@ -201,31 +219,70 @@ mod tests {
             record_for(&store, "first", Some("user-a"));
             record_for(&store, "second", None)
         };
-        assert_eq!(stored.id, 1);
+        assert_eq!(stored.id, 2);
         assert_eq!(stored.started_at, "2026-08-12T09:00:00.000Z");
         chrono::DateTime::parse_from_rfc3339(&stored.finished_at).unwrap();
 
         let reopened = RunStore::open(Some(path)).unwrap();
         let runs = reopened.list(None).unwrap();
         assert_eq!(runs.len(), 2);
-        assert_eq!(runs[0].id, 0);
+        assert_eq!(runs[0].id, 1);
         assert_eq!(runs[0].manifest_name, "first");
         assert_eq!(runs[0].steps[0].feature_count, 7);
-        assert_eq!(runs[1].id, 1);
+        assert_eq!(runs[1].id, 2);
         assert_eq!(runs[1].started_at, stored.started_at);
         assert_eq!(runs[1].finished_at, stored.finished_at);
 
         // ids carry on from what is already stored
         let third = record_for(&reopened, "third", None);
-        assert_eq!(third.id, 2);
+        assert_eq!(third.id, 3);
+    }
+
+    // several replicas on one file, which is what each own connection stands
+    // in for. Every write has to land with an id of its own: allocating from
+    // MAX(id)+1 handed two writers the same one and the loser answered 500.
+    #[test]
+    fn concurrent_writers_on_one_file_all_get_their_own_id() {
+        const WRITERS: usize = 4;
+        const RUNS_EACH: usize = 25;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.sqlite");
+        let path = path.to_str().unwrap().to_string();
+
+        RunStore::open(Some(&path)).unwrap();
+
+        let written: Vec<usize> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..WRITERS)
+                .map(|writer| {
+                    let path = path.clone();
+                    scope.spawn(move || {
+                        let store = RunStore::open(Some(&path)).unwrap();
+                        (0..RUNS_EACH)
+                            .map(|run| record_for(&store, &format!("w{writer}-r{run}"), None).id)
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().unwrap())
+                .collect()
+        });
+
+        let unique: std::collections::HashSet<_> = written.iter().collect();
+        assert_eq!(unique.len(), WRITERS * RUNS_EACH);
+
+        let stored = RunStore::open(Some(&path)).unwrap().list(None).unwrap();
+        assert_eq!(stored.len(), WRITERS * RUNS_EACH);
     }
 
     #[test]
     fn a_subject_reads_only_its_own_runs() {
         let store = RunStore::open(None).unwrap();
         record_for(&store, "mine", Some("user-a"));
-        record_for(&store, "theirs", Some("user-b"));
-        record_for(&store, "nobodys", None);
+        let theirs = record_for(&store, "theirs", Some("user-b")).id;
+        let nobodys = record_for(&store, "nobodys", None).id;
 
         let names = |subject| {
             store
@@ -238,11 +295,11 @@ mod tests {
         assert_eq!(names(Some("user-a")), ["mine"]);
         assert_eq!(names(None), ["mine", "theirs", "nobodys"]);
 
-        assert!(store.get(1, Some("user-a")).unwrap().is_none());
-        assert!(store.get(1, Some("user-b")).unwrap().is_some());
-        assert!(store.get(1, None).unwrap().is_some());
+        assert!(store.get(theirs, Some("user-a")).unwrap().is_none());
+        assert!(store.get(theirs, Some("user-b")).unwrap().is_some());
+        assert!(store.get(theirs, None).unwrap().is_some());
         // a run with no subject belongs to nobody, so no subject reads it
-        assert!(store.get(2, Some("user-a")).unwrap().is_none());
+        assert!(store.get(nobodys, Some("user-a")).unwrap().is_none());
         assert!(store.get(9, None).unwrap().is_none());
         assert!(store.get(usize::MAX, None).unwrap().is_none());
     }
