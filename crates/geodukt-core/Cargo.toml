@@ -8,7 +8,7 @@ license.workspace = true
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "0.9"
 petgraph = "0.8"
 topoi-core = { git = "https://github.com/GeoLang/topoi.git", branch = "master" }
 geoplumb = { git = "https://github.com/GeoLang/geoplumb.git", branch = "master" }

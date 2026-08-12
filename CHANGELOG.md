@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rusqlite` moved to 0.40, so the SQLite the binary bundles is 3.53 rather
   than 3.46. The run history and the GeoPackage reader and writer call the same
   connection, statement and value APIs as before, so neither needed changing
+- `toml` moved to 0.9, which parses through `toml_parser` instead of
+  `toml_edit`. `toml::Value`, the manifest round trip and the two error types
+  kept their shapes, and a parse failure still points at the line and column
+  that broke, which is what `/validate` hands back
 - `sha2` moved to 0.11, whose digest output no longer formats itself as hex, so
   geodukt-core encodes the bytes itself. The hex strings are unchanged byte for
   byte, which golden tests now pin, so incremental state files and feature
