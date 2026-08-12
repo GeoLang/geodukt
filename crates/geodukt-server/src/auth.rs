@@ -4,10 +4,11 @@
 //! secret, the same shape ptolemy and tiletopia validate, so one token works
 //! across services.
 //!
-//! `POST /run` is gated on the editor or admin role: it reads and writes files
-//! the manifest names, so it needs an identity to record and a role to check.
+//! `POST /run` accepts a normal user token with the editor or admin role, or a
+//! role-free tool token carrying the exact `geodukt:run` scope.
 //! The run history, `GET /runs` and `GET /runs/{id}`, needs a valid token of any
 //! role, and the subject each record carries decides which of them come back.
+//! Tool tokens cannot read history.
 //! `/validate`, `/operations` and `/health` have no side effects and stay open,
 //! because headless planning and the eval harness call them without a token.
 
@@ -21,25 +22,53 @@ use serde::{Deserialize, Serialize};
 
 /// Env var holding the shared HS256 secret. Unset means dev mode: no gate.
 pub const SECRET_ENV: &str = "PLATFORM_JWT_SECRET";
+pub const TOOL_TOKEN_USE: &str = "tool";
+pub const GEODUKT_RUN_SCOPE: &str = "geodukt:run";
 
 /// JWT claims.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String,
     pub exp: usize,
-    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_use: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Vec<String>>,
 }
 
 impl Claims {
-    /// Unknown role strings grant nothing, so a typo cannot open a run.
+    fn valid_contract(&self) -> bool {
+        match self.token_use.as_deref() {
+            None => self.role.is_some(),
+            Some(TOOL_TOKEN_USE) => self.role.is_none() && self.scope.is_some(),
+            Some(_) => false,
+        }
+    }
+
+    fn is_tool_token(&self) -> bool {
+        self.token_use.as_deref() == Some(TOOL_TOKEN_USE)
+    }
+
+    fn has_scope(&self, required: &str) -> bool {
+        self.scope
+            .as_ref()
+            .is_some_and(|scopes| scopes.iter().any(|scope| scope == required))
+    }
+
+    /// A user role or the exact scoped operation may start a run.
     pub fn can_run(&self) -> bool {
-        matches!(self.role.as_str(), "admin" | "editor")
+        if self.is_tool_token() {
+            return self.has_scope(GEODUKT_RUN_SCOPE);
+        }
+        matches!(self.role.as_deref(), Some("admin" | "editor"))
     }
 
     /// The instance-wide administrator, the role that reads other callers'
     /// runs. Same string ptolemy, tiletopia and collecta admit.
     pub fn can_admin(&self) -> bool {
-        self.role == "admin"
+        !self.is_tool_token() && self.role.as_deref() == Some("admin")
     }
 }
 
@@ -99,6 +128,9 @@ fn verify(request: &Request, secret: &str) -> Result<Claims, (StatusCode, &'stat
     let Ok(data) = decode::<Claims>(token, &key, &Validation::default()) else {
         return Err((StatusCode::UNAUTHORIZED, "invalid or expired token"));
     };
+    if !data.claims.valid_contract() {
+        return Err((StatusCode::UNAUTHORIZED, "invalid or expired token"));
+    }
 
     Ok(data.claims)
 }
@@ -120,6 +152,9 @@ pub async fn require_run_access(
     };
 
     if !claims.can_run() {
+        if claims.is_tool_token() {
+            return deny(StatusCode::FORBIDDEN, "geodukt:run scope required");
+        }
         return deny(StatusCode::FORBIDDEN, "editor or admin role required");
     }
 
@@ -144,6 +179,10 @@ pub async fn require_history_access(
         Ok(claims) => claims,
         Err((status, message)) => return deny(status, message),
     };
+
+    if claims.is_tool_token() {
+        return deny(StatusCode::FORBIDDEN, "platform user token required");
+    }
 
     request.extensions_mut().insert(claims);
     next.run(request).await
@@ -215,7 +254,9 @@ mod tests {
         let claims = |role: &str| Claims {
             sub: "u1".into(),
             exp: 0,
-            role: role.into(),
+            role: Some(role.into()),
+            token_use: None,
+            scope: None,
         };
         assert!(claims("admin").can_run());
         assert!(claims("editor").can_run());
@@ -232,7 +273,9 @@ mod tests {
             config.run_visibility(&Caller(Some(Claims {
                 sub: "u1".into(),
                 exp: 0,
-                role: role.into(),
+                role: Some(role.into()),
+                token_use: None,
+                scope: None,
             })))
         };
         assert_eq!(visibility("admin"), Some(RunVisibility::All));

@@ -225,10 +225,13 @@ which part to fix:
 Same body as `/validate`. Executes the manifest and records the attempt, whether
 it succeeds or not, so every run is retrievable from `/runs`.
 
-When `PLATFORM_JWT_SECRET` is set, `/run` requires a platform JWT with the
-editor or admin role and records the caller's `sub` on the run. `/validate`,
-`/operations` and `/health` stay open. Unset means no gate, the standalone
-single-user flow.
+When `PLATFORM_JWT_SECRET` is set, `/run` accepts either a normal platform JWT
+with the editor or admin role, or a role-free tool JWT with
+`token_use: "tool"` and `scope: ["geodukt:run"]`. Both record the caller's
+`sub` on the run. A marked tool token never falls back to `role`. An empty or
+wrong scope array is 403. A missing, non-array, or non-string scope claim, an
+unknown `token_use`, or a role-bearing tool token is 401. `/validate`, `/operations`
+and `/health` stay open. Unset means no gate, the standalone single-user flow.
 
 Both outcomes return a run record, so a caller parses one shape either way. The
 `status` field tells them apart:
@@ -280,6 +283,7 @@ comes back:
 |-------|------|
 | role `admin` | every caller's runs |
 | any other role, known or not | only runs whose `sub` matches the token's |
+| `token_use: "tool"` | nothing, 403 |
 | missing, expired, or signed with another secret | nothing, 401 |
 
 A run belonging to someone else answers 404 rather than 403, so ids cannot be

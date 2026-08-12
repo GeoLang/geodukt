@@ -354,10 +354,11 @@ curl -X POST localhost:8080/validate \
                 was the work it described that could not be carried out, so retrying it will not help.
             </p>
             <p>
-                With <code>PLATFORM_JWT_SECRET</code> set, <code>/run</code> needs a platform JWT with
-                the editor or admin role and records the caller's <code>sub</code>, and
+                With <code>PLATFORM_JWT_SECRET</code> set, <code>/run</code> accepts a platform JWT with
+                the editor or admin role, or a role-free tool JWT with
+                <code>token_use: "tool"</code> and <code>scope: ["geodukt:run"]</code>, and records the caller's <code>sub</code>. Marked tool tokens never fall back to a role. An empty or wrong scope array is 403, and a missing or malformed scope claim is 401. The
                 <code>/runs</code> needs a token of any role: an admin reads every caller's runs, every
-                other role reads only its own, and someone else's run is a 404. Unset means no gate,
+                other role reads only its own, scoped tool tokens are 403, and someone else's run is a 404. Unset means no gate,
                 the standalone single-user flow.
             </p>
         </section>

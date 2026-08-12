@@ -18,7 +18,9 @@ fn token_for(sub: &str, role: &str, ttl_secs: i64) -> String {
         &Claims {
             sub: sub.into(),
             exp: (now + ttl_secs) as usize,
-            role: role.into(),
+            role: Some(role.into()),
+            token_use: None,
+            scope: None,
         },
         &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
     )
@@ -27,6 +29,32 @@ fn token_for(sub: &str, role: &str, ttl_secs: i64) -> String {
 
 fn token(role: &str, ttl_secs: i64) -> String {
     token_for("user-42", role, ttl_secs)
+}
+
+fn expiry(ttl_secs: i64) -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + ttl_secs
+}
+
+fn claims_token(claims: serde_json::Value) -> String {
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+    )
+    .unwrap()
+}
+
+fn tool_token(scopes: &[&str], ttl_secs: i64) -> String {
+    claims_token(serde_json::json!({
+        "sub": "user-42",
+        "exp": expiry(ttl_secs),
+        "token_use": "tool",
+        "scope": scopes,
+    }))
 }
 
 /// Runs a point through to a geojson sink, so a permitted run completes.
@@ -155,6 +183,86 @@ async fn admin_token_is_allowed_too() {
 }
 
 #[tokio::test]
+async fn scoped_tool_token_runs_and_records_the_subject() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+
+    let bearer = tool_token(&["geodukt:run"], 60);
+    let (status, record) = send(gated(), run_request(&manifest, Some(&bearer))).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(record["status"], "Completed");
+    assert_eq!(record["sub"], "user-42");
+}
+
+#[tokio::test]
+async fn empty_scope_tool_token_cannot_fall_back_to_a_role() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+
+    let empty = tool_token(&[], 60);
+    let (status, body) = send(gated(), run_request(&manifest, Some(&empty))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "geodukt:run scope required");
+
+    let role_bearing = claims_token(serde_json::json!({
+        "sub": "user-42",
+        "exp": expiry(60),
+        "role": "admin",
+        "token_use": "tool",
+        "scope": [],
+    }));
+    let (status, _) = send(gated(), run_request(&manifest, Some(&role_bearing))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(!dir.path().join("out.geojson").exists());
+}
+
+#[tokio::test]
+async fn wrong_scope_is_forbidden() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+    let bearer = tool_token(&["ptolemy:read"], 60);
+
+    let (status, body) = send(gated(), run_request(&manifest, Some(&bearer))).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "geodukt:run scope required");
+    assert!(!dir.path().join("out.geojson").exists());
+}
+
+#[tokio::test]
+async fn malformed_tool_claims_are_unauthorized() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+    let claims = [
+        serde_json::json!({
+            "sub": "user-42",
+            "exp": expiry(60),
+            "token_use": "tool",
+        }),
+        serde_json::json!({
+            "sub": "user-42",
+            "exp": expiry(60),
+            "token_use": "tool",
+            "scope": "geodukt:run",
+        }),
+        serde_json::json!({
+            "sub": "user-42",
+            "exp": expiry(60),
+            "token_use": "other",
+            "scope": ["geodukt:run"],
+        }),
+    ];
+
+    for claims in claims {
+        let bearer = claims_token(claims);
+        let (status, _) = send(gated(), run_request(&manifest, Some(&bearer))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    assert!(!dir.path().join("out.geojson").exists());
+}
+
+#[tokio::test]
 async fn missing_token_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = working_manifest(dir.path());
@@ -195,7 +303,9 @@ async fn token_signed_with_another_secret_is_rejected() {
         &Claims {
             sub: "user-42".into(),
             exp: usize::MAX,
-            role: "admin".into(),
+            role: Some("admin".into()),
+            token_use: None,
+            scope: None,
         },
         &jsonwebtoken::EncodingKey::from_secret(b"a-completely-different-secret-val"),
     )
@@ -287,6 +397,19 @@ async fn expired_token_cannot_read_the_run_history() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn tool_token_cannot_read_the_run_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = history_of_two_users(dir.path()).await;
+    let bearer = tool_token(&["geodukt:run"], 60);
+
+    for uri in ["/runs", "/runs/1"] {
+        let (status, body) = send(app.clone(), get_request(uri, Some(&bearer))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(body["error"], "platform user token required");
+    }
 }
 
 #[tokio::test]
