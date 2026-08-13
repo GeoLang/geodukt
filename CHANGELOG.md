@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- 2026-08-12: the cdc feature hash encodes geometry and property values itself
+  instead of feeding their `Debug` output to the hasher, so a topoi release that
+  reformats `FeatureGeometry` no longer moves geodukt's hashes. Every variant is
+  matched by name, an added upstream variant stops the build here rather than
+  hashing as something else, coordinates go in as their float bits, and each
+  string and list carries its length so two different shapes cannot produce the
+  same bytes. The hashes themselves all changed, which the golden test now pins.
+  Nothing stores a feature hash between runs, so the first run after this reads
+  the same as any other
 - `toml` moved to 1.1 in all four crates, a manifest and lockfile change only:
   the feature set is unchanged from 0.9 and every surface the repo uses
   (`toml::Value`, `from_str`, `to_string_pretty`, both error types) compiles

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::feature::{Feature, FeatureCollection, Value};
+use crate::geometry::{self, Coord, FeatureGeometry, Polygon};
 use crate::hex;
 
 /// The type of change detected.
@@ -119,11 +120,13 @@ impl CdcDetector {
     /// Compute a content hash for a feature (geometry + properties).
     pub fn feature_hash(feature: &Feature) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(format!("{:?}", feature.geometry).as_bytes());
+        update_with_geometry(&mut hasher, &feature.geometry);
         let mut props: Vec<(&String, &Value)> = feature.properties.iter().collect();
         props.sort_by_key(|(k, _)| *k);
+        update_with_length(&mut hasher, props.len());
         for (k, v) in props {
-            hasher.update(format!("{k}={v:?}").as_bytes());
+            update_with_bytes(&mut hasher, k.as_bytes());
+            update_with_value(&mut hasher, v);
         }
         hex::encode_lowercase(&hasher.finalize())
     }
@@ -168,6 +171,93 @@ impl CdcDetector {
         changed.sort();
         changed
     }
+}
+
+/// Feed a geometry to the hasher as an encoding geodukt owns, so an upstream
+/// `Debug` change cannot move a content hash. Editing any of this moves them all.
+fn update_with_geometry(hasher: &mut Sha256, geometry: &FeatureGeometry) {
+    update_with_bytes(hasher, geometry::type_name(geometry).as_bytes());
+    match geometry {
+        FeatureGeometry::Point(point) => update_with_coord(hasher, point.0),
+        FeatureGeometry::LineString(line) => update_with_coords(hasher, line.coords()),
+        FeatureGeometry::Polygon(polygon) => update_with_polygon(hasher, polygon),
+        FeatureGeometry::MultiPoint(points) => {
+            update_with_length(hasher, points.points().len());
+            for point in points.points() {
+                update_with_coord(hasher, point.0);
+            }
+        }
+        FeatureGeometry::MultiLineString(lines) => {
+            update_with_length(hasher, lines.linestrings().len());
+            for line in lines.linestrings() {
+                update_with_coords(hasher, line.coords());
+            }
+        }
+        FeatureGeometry::MultiPolygon(polygons) => {
+            update_with_length(hasher, polygons.polygons().len());
+            for polygon in polygons.polygons() {
+                update_with_polygon(hasher, polygon);
+            }
+        }
+        FeatureGeometry::GeometryCollection(members) => {
+            update_with_length(hasher, members.len());
+            for member in members {
+                update_with_geometry(hasher, member);
+            }
+        }
+    }
+}
+
+fn update_with_polygon(hasher: &mut Sha256, polygon: &Polygon) {
+    update_with_coords(hasher, polygon.exterior().coords());
+    update_with_length(hasher, polygon.interiors().len());
+    for interior in polygon.interiors() {
+        update_with_coords(hasher, interior.coords());
+    }
+}
+
+fn update_with_coords(hasher: &mut Sha256, coords: &[Coord]) {
+    update_with_length(hasher, coords.len());
+    for coord in coords {
+        update_with_coord(hasher, *coord);
+    }
+}
+
+fn update_with_coord(hasher: &mut Sha256, coord: Coord) {
+    hasher.update(coord.x.to_bits().to_be_bytes());
+    hasher.update(coord.y.to_bits().to_be_bytes());
+}
+
+fn update_with_value(hasher: &mut Sha256, value: &Value) {
+    match value {
+        Value::Null => update_with_bytes(hasher, b"null"),
+        Value::Bool(flag) => {
+            update_with_bytes(hasher, b"bool");
+            hasher.update([u8::from(*flag)]);
+        }
+        Value::Integer(number) => {
+            update_with_bytes(hasher, b"integer");
+            hasher.update(number.to_be_bytes());
+        }
+        Value::Float(number) => {
+            update_with_bytes(hasher, b"float");
+            hasher.update(number.to_bits().to_be_bytes());
+        }
+        Value::String(text) => {
+            update_with_bytes(hasher, b"string");
+            update_with_bytes(hasher, text.as_bytes());
+        }
+    }
+}
+
+/// Length prefixed so no two different structures can feed the hasher the same bytes.
+fn update_with_bytes(hasher: &mut Sha256, bytes: &[u8]) {
+    update_with_length(hasher, bytes.len());
+    hasher.update(bytes);
+}
+
+fn update_with_length(hasher: &mut Sha256, length: usize) {
+    hasher.update((length as u64).to_be_bytes());
 }
 
 #[cfg(test)]
@@ -241,7 +331,7 @@ mod tests {
         };
         assert_eq!(
             CdcDetector::feature_hash(&feature),
-            "f9501665c9a7b1806e823c055ec0c7372b4025c4242ece04a99c20f117c01ea7"
+            "d933855d1b34f1b4f26ffbc744006d51830ae87bdca830a247c6d1b8b15fc2e4"
         );
     }
 
@@ -253,5 +343,21 @@ mod tests {
             CdcDetector::feature_hash(&f1),
             CdcDetector::feature_hash(&f2)
         );
+    }
+
+    #[test]
+    fn test_feature_hash_separates_geometries_sharing_coordinates() {
+        use crate::geometry::{LineString, MultiPoint};
+
+        let coords = [Coord::new(0.0, 0.0), Coord::new(1.0, 1.0)];
+        let line = FeatureGeometry::LineString(LineString::new(coords.to_vec()));
+        let points = FeatureGeometry::MultiPoint(MultiPoint::new(coords.map(Point).to_vec()));
+        let hash_of = |geometry| {
+            CdcDetector::feature_hash(&Feature {
+                geometry,
+                properties: HashMap::new(),
+            })
+        };
+        assert_ne!(hash_of(line), hash_of(points));
     }
 }
