@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `toml` moved to 1.1 in all four crates, a manifest and lockfile change only:
+  the feature set is unchanged from 0.9 and every surface the repo uses
+  (`toml::Value`, `from_str`, `to_string_pretty`, both error types) compiles
+  as before. `/validate` error text still carries line, column and a source
+  snippet, and the duplicate winnow the 0.9 tree carried is gone
 - sqlite hands out run ids instead of the server picking them with
   `MAX(id) + 1`, which two processes on one database file could read before
   either had inserted, so both wrote the same id and the loser answered 500. A
@@ -20,7 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   execution order are untouched
 - `rusqlite` moved to 0.40, so the SQLite the binary bundles is 3.53 rather
   than 3.46. The run history and the GeoPackage reader and writer call the same
-  connection, statement and value APIs as before, so neither needed changing
+  connection, statement and value APIs as before, so neither needed changing.
+  One caveat for later code: 0.40 puts the `u64`/`usize` `ToSql`/`FromSql`
+  impls behind a `fallible_uint` feature that is off by default, harmless here
+  because the run store converts through `i64` at both ends, but binding a
+  `usize` directly would fail to compile
 - `toml` moved to 0.9, which parses through `toml_parser` instead of
   `toml_edit`. `toml::Value`, the manifest round trip and the two error types
   kept their shapes, and a parse failure still points at the line and column
