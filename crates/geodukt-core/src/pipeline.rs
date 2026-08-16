@@ -1,4 +1,4 @@
-//! Pipeline execution — runs the DAG in topological order.
+//! Pipeline execution — runs the DAG as independent waves.
 
 use std::collections::HashMap;
 use thiserror::Error;
@@ -6,10 +6,7 @@ use thiserror::Error;
 use crate::dag::{Dag, DagError, Node};
 use crate::feature::FeatureCollection;
 use crate::incremental::IncrementalState;
-use crate::lineage::LineageTracker;
 use crate::manifest::{Manifest, Sink, Source};
-use crate::quality::{QualityRule, check_quality};
-use crate::routing::EngineRouter;
 
 /// Errors during pipeline execution.
 #[derive(Debug, Error)]
@@ -27,12 +24,12 @@ pub enum PipelineError {
 }
 
 /// Trait for reading feature data from a source.
-pub trait SourceReader {
+pub trait SourceReader: Send + Sync {
     fn read_source(&self, source: &Source) -> Result<FeatureCollection, PipelineError>;
 }
 
 /// Trait for applying a spatial transform.
-pub trait TransformOp {
+pub trait TransformOp: Send + Sync {
     fn apply(
         &self,
         input: &FeatureCollection,
@@ -41,7 +38,7 @@ pub trait TransformOp {
 }
 
 /// Trait for writing feature data to a sink.
-pub trait SinkWriter {
+pub trait SinkWriter: Send + Sync {
     fn write_sink(&self, data: &FeatureCollection, sink: &Sink) -> Result<(), PipelineError>;
 }
 
@@ -99,36 +96,14 @@ impl Pipeline {
             }
         }
 
-        let io = Io {
+        let (report, lineage) = crate::scheduler::ParallelScheduler::execute(
+            &self.dag,
+            &order,
             reader,
             transforms,
             writer,
-        };
-        let mut state = RunState {
-            order: &order,
-            data: HashMap::new(),
-            report: ExecutionReport::default(),
-            router: EngineRouter::new(&order, transforms),
-            lineage: LineageTracker::new(),
-            check_quality: self.manifest.project.quality,
-        };
-
-        for (i, node) in order.iter().enumerate() {
-            if let Err(error) = run_node(node, &io, &mut state) {
-                return Err(Box::new(ExecutionFailure {
-                    completed: state.report.steps,
-                    failed: Some(FailedStep {
-                        name: node.name().to_string(),
-                        message: error.to_string(),
-                    }),
-                    not_run: order[i + 1..]
-                        .iter()
-                        .map(|n| n.name().to_string())
-                        .collect(),
-                    error,
-                }));
-            }
-        }
+            self.manifest.project.quality,
+        )?;
 
         if self.manifest.project.incremental {
             let mut inc = IncrementalState::load(std::path::Path::new(".geodukt/incremental.json"));
@@ -138,106 +113,19 @@ impl Pipeline {
             let _ = inc.save(std::path::Path::new(".geodukt/incremental.json"));
         }
         if self.manifest.project.lineage
-            && let Ok(json) = serde_json::to_string_pretty(&state.lineage)
+            && let Ok(json) = serde_json::to_string_pretty(&lineage)
         {
             let _ = std::fs::create_dir_all(".geodukt");
             let _ = std::fs::write(".geodukt/lineage.json", json);
         }
 
-        Ok(state.report)
+        Ok(report)
     }
 
     /// Get the manifest.
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }
-}
-
-/// The implementations one run was handed.
-struct Io<'a> {
-    reader: &'a dyn SourceReader,
-    transforms: &'a HashMap<String, Box<dyn TransformOp>>,
-    writer: &'a dyn SinkWriter,
-}
-
-/// What a run carries from node to node.
-struct RunState<'a> {
-    order: &'a [&'a Node],
-    data: HashMap<String, FeatureCollection>,
-    report: ExecutionReport,
-    router: EngineRouter,
-    lineage: LineageTracker,
-    check_quality: bool,
-}
-
-fn run_node(node: &Node, io: &Io<'_>, state: &mut RunState<'_>) -> Result<(), PipelineError> {
-    match node {
-        Node::Source(source) => {
-            let fc = io.reader.read_source(source)?;
-            // a source on the engine holds the same features there, so its
-            // count is the collection's either way and the collection itself
-            // is kept only for whatever still reads it off the engine
-            let resident = state.router.admit_source(state.order, source, &fc)?;
-            state.report.record_step(&source.name, fc.len());
-            if !resident || state.router.feeds_off_engine(state.order, &source.name) {
-                state.data.insert(source.name.clone(), fc);
-            }
-        }
-        Node::Transform(transform) if state.router.is_resident(&transform.name) => {
-            let wanted = state.router.feeds_off_engine(state.order, &transform.name);
-            let (count, materialized) = state.router.pull(&transform.name, wanted)?;
-            state.report.record_step(&transform.name, count);
-            if let Some(fc) = materialized {
-                state.data.insert(transform.name.clone(), fc);
-            }
-        }
-        Node::Transform(transform) => {
-            let input_data =
-                state
-                    .data
-                    .get(&transform.input)
-                    .ok_or_else(|| PipelineError::Transform {
-                        name: transform.name.clone(),
-                        message: format!("input '{}' not available", transform.input),
-                    })?;
-            let op = io.transforms.get(&transform.operation).ok_or_else(|| {
-                PipelineError::Transform {
-                    name: transform.name.clone(),
-                    message: format!("unknown operation '{}'", transform.operation),
-                }
-            })?;
-            let result = op.apply(input_data, &transform.params)?;
-            if state.check_quality {
-                let failures: Vec<_> = check_quality(&result, &[QualityRule::GeometryValid])
-                    .into_iter()
-                    .filter(|r| !r.passed)
-                    .collect();
-                if let Some(fail) = failures.first() {
-                    return Err(PipelineError::Transform {
-                        name: transform.name.clone(),
-                        message: fail.message.clone(),
-                    });
-                }
-            }
-            state
-                .lineage
-                .record_passthrough(&transform.name, &transform.input, result.len());
-            state.report.record_step(&transform.name, result.len());
-            state.data.insert(transform.name.clone(), result);
-        }
-        Node::Sink(sink) => {
-            let input_data = state
-                .data
-                .get(&sink.input)
-                .ok_or_else(|| PipelineError::Sink {
-                    name: sink.name.clone(),
-                    message: format!("input '{}' not available", sink.input),
-                })?;
-            io.writer.write_sink(input_data, sink)?;
-            state.report.record_step(&sink.name, input_data.len());
-        }
-    }
-    Ok(())
 }
 
 /// Report from a pipeline execution.
@@ -247,7 +135,7 @@ pub struct ExecutionReport {
 }
 
 /// Result of a single pipeline step.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StepResult {
     pub name: String,
     pub feature_count: usize,
@@ -275,7 +163,7 @@ pub struct FailedStep {
 }
 
 impl ExecutionFailure {
-    fn before_start(error: PipelineError) -> Self {
+    pub(crate) fn before_start(error: PipelineError) -> Self {
         Self {
             completed: Vec::new(),
             failed: None,
@@ -297,7 +185,7 @@ impl From<ExecutionFailure> for PipelineError {
 }
 
 impl ExecutionReport {
-    fn record_step(&mut self, name: &str, feature_count: usize) {
+    pub(crate) fn record_step(&mut self, name: &str, feature_count: usize) {
         self.steps.push(StepResult {
             name: name.to_string(),
             feature_count,

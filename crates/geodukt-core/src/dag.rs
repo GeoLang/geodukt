@@ -109,6 +109,50 @@ impl Dag {
         Ok(sorted.iter().map(|idx| &self.graph[*idx]).collect())
     }
 
+    /// Independent waves: every node in a wave has its inputs in an earlier one.
+    /// Nodes inside a wave have no edges between them and can run together.
+    pub fn execution_waves(&self) -> Result<Vec<Vec<&Node>>, DagError> {
+        let mut remaining: HashMap<NodeIndex, usize> =
+            self.graph.node_indices().map(|idx| (idx, 0)).collect();
+        for edge in self.graph.edge_indices() {
+            let (_, target) = self
+                .graph
+                .edge_endpoints(edge)
+                .expect("edge index from the same graph");
+            *remaining.get_mut(&target).expect("endpoint is a node") += 1;
+        }
+
+        let mut ready: Vec<NodeIndex> = remaining
+            .iter()
+            .filter(|(_, degree)| **degree == 0)
+            .map(|(idx, _)| *idx)
+            .collect();
+        let mut waves = Vec::new();
+        let mut seen = 0usize;
+
+        while !ready.is_empty() {
+            ready.sort_by_key(|idx| self.graph[*idx].name());
+            waves.push(ready.iter().map(|idx| &self.graph[*idx]).collect());
+            let mut next = Vec::new();
+            for idx in &ready {
+                seen += 1;
+                for neighbor in self.graph.neighbors(*idx) {
+                    let left = remaining.get_mut(&neighbor).expect("neighbor is a node");
+                    *left -= 1;
+                    if *left == 0 {
+                        next.push(neighbor);
+                    }
+                }
+            }
+            ready = next;
+        }
+
+        if seen != self.graph.node_count() {
+            return Err(DagError::CycleDetected);
+        }
+        Ok(waves)
+    }
+
     /// Get a node by name.
     pub fn get_node(&self, name: &str) -> Option<&Node> {
         self.name_to_index.get(name).map(|idx| &self.graph[*idx])
@@ -199,5 +243,59 @@ path = "b.geojson"
         let manifest = Manifest::from_toml(toml).unwrap();
         let result = Dag::from_manifest(&manifest);
         assert!(matches!(result, Err(DagError::DuplicateName(_))));
+    }
+
+    #[test]
+    fn test_execution_waves_independent_branches() {
+        let toml = r#"
+[project]
+name = "waves"
+
+[[source]]
+name = "left"
+format = "geojson"
+path = "a.geojson"
+
+[[source]]
+name = "right"
+format = "geojson"
+path = "b.geojson"
+
+[[transform]]
+name = "left_out"
+input = "left"
+operation = "passthrough"
+
+[[transform]]
+name = "right_out"
+input = "right"
+operation = "passthrough"
+
+[[sink]]
+name = "left_sink"
+input = "left_out"
+format = "geojson"
+path = "a.out"
+
+[[sink]]
+name = "right_sink"
+input = "right_out"
+format = "geojson"
+path = "b.out"
+"#;
+        let dag = Dag::from_manifest(&Manifest::from_toml(toml).unwrap()).unwrap();
+        let waves = dag.execution_waves().unwrap();
+        let names: Vec<Vec<&str>> = waves
+            .iter()
+            .map(|wave| wave.iter().map(|n| n.name()).collect())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                vec!["left", "right"],
+                vec!["left_out", "right_out"],
+                vec!["left_sink", "right_sink"],
+            ]
+        );
     }
 }

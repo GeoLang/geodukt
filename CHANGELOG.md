@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- 2026-08-15: `Pipeline::execute` runs independent DAG waves through
+  `ParallelScheduler`. Sources in a wave load together, engine-resident
+  transforms stay sequential, local transforms and sinks in that wave
+  run together. `SourceReader`, `TransformOp` and `SinkWriter` are
+  `Send + Sync`.
 - 2026-08-15: `[project] incremental`, `lineage` and `quality` are real.
   Incremental hashes sources and skips a run when none changed; lineage
   writes `.geodukt/lineage.json`; quality fails a transform with invalid
