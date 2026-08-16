@@ -20,6 +20,15 @@ pub struct Project {
     pub name: String,
     #[serde(default = "default_version")]
     pub version: String,
+    /// Hash source files and skip a run when none of them changed.
+    #[serde(default)]
+    pub incremental: bool,
+    /// Write `.geodukt/lineage.json` after a successful run.
+    #[serde(default)]
+    pub lineage: bool,
+    /// Fail a transform whose output has invalid geometries.
+    #[serde(default)]
+    pub quality: bool,
 }
 
 fn default_version() -> String {
@@ -120,6 +129,9 @@ path = "output/buffered.geojson"
             project: Project {
                 name: "roundtrip".into(),
                 version: "1.0.0".into(),
+                incremental: false,
+                lineage: false,
+                quality: false,
             },
             source: vec![Source {
                 name: "src".into(),

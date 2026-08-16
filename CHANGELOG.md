@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- 2026-08-15: `[project] incremental`, `lineage` and `quality` are real.
+  Incremental hashes sources and skips a run when none changed; lineage
+  writes `.geodukt/lineage.json`; quality fails a transform with invalid
+  geometries. `diff` still compares manifest names. `spatial_join` stays
+  unavailable.
 - 2026-08-12: the cdc feature hash encodes geometry and property values itself
   instead of feeding their `Debug` output to the hasher, so a topoi release that
   reformats `FeatureGeometry` no longer moves geodukt's hashes. Every variant is

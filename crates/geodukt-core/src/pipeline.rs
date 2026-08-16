@@ -5,7 +5,10 @@ use thiserror::Error;
 
 use crate::dag::{Dag, DagError, Node};
 use crate::feature::FeatureCollection;
+use crate::incremental::IncrementalState;
+use crate::lineage::LineageTracker;
 use crate::manifest::{Manifest, Sink, Source};
+use crate::quality::{QualityRule, check_quality};
 use crate::routing::EngineRouter;
 
 /// Errors during pipeline execution.
@@ -83,6 +86,19 @@ impl Pipeline {
             .topological_order()
             .map_err(|e| Box::new(ExecutionFailure::before_start(e.into())))?;
 
+        if self.manifest.project.incremental {
+            let state = IncrementalState::load(std::path::Path::new(".geodukt/incremental.json"));
+            let sources: Vec<(String, String)> = self
+                .manifest
+                .source
+                .iter()
+                .map(|s| (s.name.clone(), s.path.clone()))
+                .collect();
+            if !sources.is_empty() && state.changed_sources(&sources).is_empty() {
+                return Ok(ExecutionReport::default());
+            }
+        }
+
         let io = Io {
             reader,
             transforms,
@@ -93,6 +109,8 @@ impl Pipeline {
             data: HashMap::new(),
             report: ExecutionReport::default(),
             router: EngineRouter::new(&order, transforms),
+            lineage: LineageTracker::new(),
+            check_quality: self.manifest.project.quality,
         };
 
         for (i, node) in order.iter().enumerate() {
@@ -109,6 +127,20 @@ impl Pipeline {
                         .collect(),
                     error,
                 }));
+            }
+        }
+
+        if self.manifest.project.incremental {
+            let mut inc = IncrementalState::load(std::path::Path::new(".geodukt/incremental.json"));
+            for source in &self.manifest.source {
+                inc.update(&source.name, &source.path);
+            }
+            let _ = inc.save(std::path::Path::new(".geodukt/incremental.json"));
+        }
+        if self.manifest.project.lineage {
+            if let Ok(json) = serde_json::to_string_pretty(&state.lineage) {
+                let _ = std::fs::create_dir_all(".geodukt");
+                let _ = std::fs::write(".geodukt/lineage.json", json);
             }
         }
 
@@ -134,6 +166,8 @@ struct RunState<'a> {
     data: HashMap<String, FeatureCollection>,
     report: ExecutionReport,
     router: EngineRouter,
+    lineage: LineageTracker,
+    check_quality: bool,
 }
 
 fn run_node(node: &Node, io: &Io<'_>, state: &mut RunState<'_>) -> Result<(), PipelineError> {
@@ -173,6 +207,21 @@ fn run_node(node: &Node, io: &Io<'_>, state: &mut RunState<'_>) -> Result<(), Pi
                 }
             })?;
             let result = op.apply(input_data, &transform.params)?;
+            if state.check_quality {
+                let failures: Vec<_> = check_quality(&result, &[QualityRule::GeometryValid])
+                    .into_iter()
+                    .filter(|r| !r.passed)
+                    .collect();
+                if let Some(fail) = failures.first() {
+                    return Err(PipelineError::Transform {
+                        name: transform.name.clone(),
+                        message: fail.message.clone(),
+                    });
+                }
+            }
+            state
+                .lineage
+                .record_passthrough(&transform.name, &transform.input, result.len());
             state.report.record_step(&transform.name, result.len());
             state.data.insert(transform.name.clone(), result);
         }

@@ -220,6 +220,9 @@ impl VisualPipeline {
             project: crate::manifest::Project {
                 name: self.name.clone(),
                 version: self.version.clone(),
+                incremental: false,
+                lineage: false,
+                quality: false,
             },
             source: sources,
             transform: transforms,

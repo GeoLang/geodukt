@@ -10,13 +10,13 @@ Define transformations as a DAG of models. Geodukt resolves dependencies, valida
 ## Features
 
 - **Declarative pipeline definitions** — TOML manifest files describe sources, transforms, and sinks
-- **DAG execution engine** — automatic dependency resolution, parallel where possible
-- **Spatial transforms** — reproject, clip, buffer, simplify, centroid, dissolve, filter, expression, schema map
+- **DAG execution engine** — automatic dependency resolution, then a run in topological order
+- **Spatial transforms** — reproject, clip, buffer, simplify, centroid, dissolve, filter, expression, schema map. `spatial_join` is listed and unavailable
 - **Pure Rust**: geometry through [topoi](https://github.com/GeoLang/topoi), coordinate transforms through [projicio](https://github.com/GeoLang/projicio), so a build needs no PROJ or GEOS on the machine
 - **Formats** — pipeline sources and sinks read and write GeoJSON, GeoPackage, Shapefile, and CSV
-- **Validation** — geometry validity checks, CRS verification, schema assertions
-- **Incremental processing** — hash-based change detection, only reprocess what changed
-- **Lineage tracking** — full provenance from source to sink
+- **Validation** — `/validate` checks the DAG. Set `quality = true` on `[project]` to reject invalid geometries after each transform
+- **Incremental processing** — set `incremental = true` on `[project]` to hash sources and skip a run when none changed
+- **Lineage tracking** — set `lineage = true` on `[project]` to write `.geodukt/lineage.json` after a successful run
 - **REST API** — `/validate` checks a manifest without running it, `/operations` describes every operation and format a manifest may name, `/run` and `/runs` execute and record runs, and `/gp/*` exposes individual tools with JSON I/O
 
 ## Quick Start
@@ -43,7 +43,7 @@ geodukt serve --bind 127.0.0.1:8080
 # Generate pipeline docs (markdown or html)
 geodukt docs --format markdown
 
-# Diff pipeline outputs against a git ref
+# Diff the source/transform/sink names in this manifest against a git ref
 geodukt diff --from HEAD~1
 ```
 
