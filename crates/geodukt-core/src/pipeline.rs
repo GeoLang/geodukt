@@ -137,11 +137,11 @@ impl Pipeline {
             }
             let _ = inc.save(std::path::Path::new(".geodukt/incremental.json"));
         }
-        if self.manifest.project.lineage {
-            if let Ok(json) = serde_json::to_string_pretty(&state.lineage) {
-                let _ = std::fs::create_dir_all(".geodukt");
-                let _ = std::fs::write(".geodukt/lineage.json", json);
-            }
+        if self.manifest.project.lineage
+            && let Ok(json) = serde_json::to_string_pretty(&state.lineage)
+        {
+            let _ = std::fs::create_dir_all(".geodukt");
+            let _ = std::fs::write(".geodukt/lineage.json", json);
         }
 
         Ok(state.report)
