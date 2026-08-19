@@ -10,21 +10,24 @@ Define transformations as a DAG of models. Geodukt resolves dependencies, valida
 ## Features
 
 - **Declarative pipeline definitions** — TOML manifest files describe sources, transforms, and sinks
-- **DAG execution engine** — automatic dependency resolution, then a run in topological order
+- **DAG execution engine** — automatic dependency resolution, then a run as waves of independent nodes; the sources and the local work inside one wave run concurrently under rayon
 - **Spatial transforms** — reproject, clip, buffer, simplify, centroid, dissolve, filter, expression, schema map. `spatial_join` is listed and unavailable
-- **Pure Rust**: geometry through [topoi](https://github.com/GeoLang/topoi), coordinate transforms through [projicio](https://github.com/GeoLang/projicio), so a build needs no PROJ or GEOS on the machine
+- **No PROJ or GEOS**: geometry through [topoi](https://github.com/GeoLang/topoi), coordinate transforms through [projicio](https://github.com/GeoLang/projicio). The build is not pure Rust though: `geodukt-io` and `geodukt-server` take rusqlite with `bundled`, which compiles C SQLite, so a C toolchain has to be there
 - **Formats** — pipeline sources and sinks read and write GeoJSON, GeoPackage, Shapefile, and CSV
-- **Validation** — `/validate` checks the DAG. Set `quality = true` on `[project]` to reject invalid geometries after each transform
+- **Validation** — `/validate` checks the DAG. Set `quality = true` on `[project]` to reject invalid geometries after each local transform. Engine-resident transforms, meaning a `filter`, `schema_map` or `clip` sitting directly under a source, skip the check, so the same invalid geometry that fails through an `expression` passes through an engine `filter`
 - **Incremental processing** — set `incremental = true` on `[project]` to hash sources and skip a run when none changed
-- **Lineage tracking** — set `lineage = true` on `[project]` to write `.geodukt/lineage.json` after a successful run
+- **Lineage tracking** — set `lineage = true` on `[project]` to write `.geodukt/lineage.json` after a successful run. The mapping is positional, not real provenance: it names input feature i as the parent of output feature i whatever the operation did, so after a `filter` drops a feature the parents are wrong. Only local transforms record anything, so a pipeline whose transforms all run on the engine writes `{"records": []}`
 - **REST API** — `/validate` checks a manifest without running it, `/operations` describes every operation and format a manifest may name, `/run` and `/runs` execute and record runs, and `/gp/*` exposes individual tools with JSON I/O
 
 ## Quick Start
 
-```bash
-# Install
-cargo install geodukt-cli
+Geodukt is not on crates.io. Tagged releases build `geodukt` for
+x86_64/aarch64 Linux and macOS and upload one tarball per target to
+[GitHub Releases](https://github.com/GeoLang/geodukt/releases), so installing
+means downloading the tarball for your target and putting the binary on your
+`PATH`. To build from a checkout instead, `cargo build --release -p geodukt-cli`.
 
+```bash
 # Initialize a project
 geodukt init my-pipeline
 
@@ -82,6 +85,10 @@ input = "clipped_parcels"
 format = "geojson"
 path = "output/parcels_clipped.geojson"
 ```
+
+A source also accepts a `crs` field. It is inert: nothing reads it, and the only
+place it shows up is echoed back in the `/validate` plan. Use a `reproject`
+transform to change a CRS.
 
 ## Formats
 
@@ -230,18 +237,22 @@ with the editor or admin role, or a role-free tool JWT with
 `token_use: "tool"` and `scope: ["geodukt:run"]`. Both record the caller's
 `sub` on the run. A marked tool token never falls back to `role`. An empty or
 wrong scope array is 403. A missing, non-array, or non-string scope claim, an
-unknown `token_use`, or a role-bearing tool token is 401. `/validate`, `/operations`
-and `/health` stay open. Unset means no gate, the standalone single-user flow.
+unknown `token_use`, or a role-bearing tool token is 401. What stays open is more than
+`/validate`, `/operations` and `/health`: every `/gp/*` route is open too, so a
+gated server still answers `/gp/catalog` and takes arbitrary GeoJSON on
+`/gp/buffer`, `/gp/clip`, `/gp/dissolve`, `/gp/simplify` and `/gp/centroid`
+from an unauthenticated caller. Unset means no gate, the standalone single-user
+flow.
 
 Both outcomes return a run record, so a caller parses one shape either way. The
 `status` field tells them apart:
 
 ```json
-{"id": 0, "status": "Completed", "manifest_name": "city", "manifest": "<TOML>",
+{"id": 1, "status": "Completed", "manifest_name": "city", "manifest": "<TOML>",
  "steps": [{"name": "parcels", "feature_count": 120, "status": "Completed"}],
  "started_at": "2026-08-12T09:14:02.417Z", "finished_at": "2026-08-12T09:14:05.902Z"}
 
-{"id": 1, "status": {"Failed": "Execution error: sink error for 'out': csv carries point geometry as lon/lat columns, cannot write a Polygon, ..."},
+{"id": 2, "status": {"Failed": "Execution error: sink error for 'out': csv carries point geometry as lon/lat columns, cannot write a Polygon, ..."},
  "manifest_name": "doomed", "manifest": "<TOML>",
  "steps": [{"name": "polys", "feature_count": 1, "status": "Completed"},
            {"name": "out", "feature_count": 0, "status": {"Failed": "sink error for 'out': ..."}},
@@ -297,7 +308,9 @@ history. Ids carry on from what the database already holds.
 
 ## Execution
 
-A run walks the DAG in topological order. The head of a pipeline that
+A run walks the DAG one wave at a time, a wave being the nodes whose inputs are
+all ready, and the sources and local work within a wave run concurrently under
+rayon. The head of a pipeline that
 [geoplumb](https://github.com/GeoLang/geoplumb) can run goes onto a pull graph
 instead of the in-memory transforms: a source whose next operation is `filter`,
 `schema_map` or `clip` becomes an engine source, that run of operations becomes
@@ -313,11 +326,12 @@ the boundary and drops points outside it, on the engine and off it alike.
 ## Architecture
 
 ```
-geodukt-core    — DAG engine, transform registry, execution scheduler
-geodukt-transforms — spatial operations (reproject, clip, buffer, dissolve, etc.)
+geodukt-core    — DAG engine, wave scheduler, engine routing
+geodukt-transforms — spatial operations (reproject, clip, buffer, dissolve, etc.) and the operation registry
 geodukt-io      — source/sink connectors (GeoJSON, GeoPackage, Shapefile, CSV)
 geodukt-server  — REST API for validation, pipeline runs, and geoprocessing tools
 geodukt-cli     — command-line interface
+geodukt-plugins — unused, nothing imports it and its round trip does not carry geometry
 ```
 
 ## License

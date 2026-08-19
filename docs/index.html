@@ -201,7 +201,7 @@
             <span class="badge">DAG Engine</span>
             <span class="badge">Declarative TOML</span>
             <span class="badge">GeoJSON / GeoPackage / Shapefile / CSV</span>
-            <span class="badge">Extensible Transforms</span>
+            <span class="badge">Built-in Transforms</span>
             <span class="badge">AGPL-3.0-or-later</span>
         </div>
     </div>
@@ -216,11 +216,11 @@
                 </div>
                 <div class="feature-card">
                     <h3>DAG Execution</h3>
-                    <p>Automatic dependency resolution via topological sort. Detect cycles, validate references, execute in order.</p>
+                    <p>Automatic dependency resolution. Detect cycles, validate references, then execute wave by wave, with the sources and local work inside a wave running concurrently under rayon.</p>
                 </div>
                 <div class="feature-card">
                     <h3>Spatial Transforms</h3>
-                    <p>Buffer, centroid, filter, clip, reproject, simplify, dissolve. Pluggable registry — add your own operations.</p>
+                    <p>Buffer, centroid, filter, clip, reproject, simplify, dissolve, expression, schema map. The operation registry is a fixed built-in set: a manifest cannot name an operation outside it.</p>
                 </div>
                 <div class="feature-card">
                     <h3>Multi-Format I/O</h3>
@@ -231,8 +231,8 @@
                     <p><code>geodukt run</code>, <code>validate</code>, <code>graph</code>, <code>init</code>, <code>serve</code>, <code>docs</code>, <code>diff</code>. Fast feedback on your pipeline before execution.</p>
                 </div>
                 <div class="feature-card">
-                    <h3>Extensible Architecture</h3>
-                    <p>Implement TransformOp, SourceReader, or SinkWriter traits. Register new operations in the transform registry.</p>
+                    <h3>Trait-Based Internals</h3>
+                    <p>TransformOp, SourceReader and SinkWriter are public traits, so Rust code embedding the crates can assemble its own registry. Neither the CLI nor the server does: both build the default registry unconditionally, so a custom operation is not reachable from a manifest or the REST API.</p>
                 </div>
                 <div class="feature-card">
                     <h3>Validation First</h3>
@@ -361,6 +361,14 @@ curl -X POST localhost:8080/validate \
                 other role reads only its own, scoped tool tokens are 403, and someone else's run is a 404. Unset means no gate,
                 the standalone single-user flow.
             </p>
+            <p>
+                The gate covers <code>/run</code>, <code>/runs</code> and <code>/runs/{id}</code> and nothing else.
+                <code>/health</code>, <code>/operations</code> and <code>/validate</code> are open by design, and so is
+                every <code>/gp/*</code> route: they are nested without an auth layer, so on a gated server an
+                unauthenticated caller can still read <code>/gp/catalog</code> and POST arbitrary GeoJSON to
+                <code>/gp/buffer</code>, <code>/gp/clip</code>, <code>/gp/dissolve</code>, <code>/gp/simplify</code> and
+                <code>/gp/centroid</code>.
+            </p>
         </section>
 
         <section>
@@ -370,12 +378,14 @@ curl -X POST localhost:8080/validate \
 │  geodukt-io  │────▶│   geodukt-core    │◀────│ geodukt-   │
 │ (read/write) │     │ (DAG + pipeline)  │     │ transforms │
 └──────────────┘     └───────────────────┘     └────────────┘
-                              │
-                              ▼
-                       ┌────────────────┐
-                       │  geodukt-cli   │
-                       │ (run/validate) │
-                       └────────────────┘</code></pre>
+                       │              │
+                       ▼              ▼
+              ┌────────────────┐ ┌─────────────────┐
+              │  geodukt-cli   │ │ geodukt-server  │
+              │ (run/validate) │ │   (REST API)    │
+              └────────────────┘ └─────────────────┘
+
+geodukt-plugins is also in the workspace, but nothing imports it.</code></pre>
             </div>
         </section>
 
