@@ -74,9 +74,17 @@ pub fn create_router_with_store(auth: AuthConfig, runs: RunStore) -> Router {
         )
         .route(
             "/runs/{id}",
-            get(get_run).layer(from_fn_with_state(auth, auth::require_history_access)),
+            get(get_run).layer(from_fn_with_state(
+                auth.clone(),
+                auth::require_history_access,
+            )),
         )
-        .nest("/gp", gp_tools::gp_routes().with_state(()))
+        .nest(
+            "/gp",
+            gp_tools::gp_routes()
+                .layer(from_fn_with_state(auth, auth::require_run_access))
+                .with_state(()),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

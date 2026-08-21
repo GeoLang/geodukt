@@ -1,4 +1,4 @@
-//! Tests for the JWT gate on POST /run and on the run history.
+//! Tests for the JWT gate on POST /run, the /gp tools, and the run history.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -110,6 +110,32 @@ fn get_request(uri: &str, bearer: Option<&str>) -> Request<Body> {
         builder = builder.header("authorization", format!("Bearer {bearer}"));
     }
     builder.body(Body::empty()).unwrap()
+}
+
+fn gp_buffer_request(bearer: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/gp/buffer")
+        .header("content-type", "application/json");
+    if let Some(bearer) = bearer {
+        builder = builder.header("authorization", format!("Bearer {bearer}"));
+    }
+    builder
+        .body(Body::from(
+            serde_json::json!({
+                "input": {
+                    "type": "FeatureCollection",
+                    "features": [{
+                        "type": "Feature",
+                        "properties": {},
+                        "geometry": {"type": "Point", "coordinates": [0.0, 0.0]}
+                    }]
+                },
+                "params": {"distance": 1.0}
+            })
+            .to_string(),
+        ))
+        .unwrap()
 }
 
 async fn send(app: axum::Router, req: Request<Body>) -> (StatusCode, serde_json::Value) {
@@ -371,6 +397,60 @@ async fn read_only_endpoints_stay_open_when_gated() {
         ))
         .unwrap();
     let (status, _) = send(gated(), req).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn gp_without_a_token_is_rejected() {
+    let (status, _) = send(gated(), gp_buffer_request(None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = send(gated(), get_request("/gp/catalog", None)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "missing bearer token");
+}
+
+#[tokio::test]
+async fn viewer_cannot_call_gp() {
+    let bearer = token("viewer", 60);
+    let (status, body) = send(gated(), gp_buffer_request(Some(&bearer))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "editor or admin role required");
+
+    let (status, body) = send(gated(), get_request("/gp/catalog", Some(&bearer))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "editor or admin role required");
+}
+
+#[tokio::test]
+async fn editor_can_call_gp() {
+    let bearer = token("editor", 60);
+    let (status, body) = send(gated(), gp_buffer_request(Some(&bearer))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["tool"], "buffer");
+
+    let (status, _) = send(gated(), get_request("/gp/catalog", Some(&bearer))).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn scoped_tool_token_can_call_gp() {
+    let bearer = tool_token(&["geodukt:run"], 60);
+    let (status, _) = send(gated(), gp_buffer_request(Some(&bearer))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = send(gated(), get_request("/gp/catalog", Some(&bearer))).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn dev_mode_gp_runs_without_a_token() {
+    let app = create_router_with_auth(AuthConfig::new(None));
+
+    let (status, _) = send(app.clone(), gp_buffer_request(None)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = send(app, get_request("/gp/catalog", None)).await;
     assert_eq!(status, StatusCode::OK);
 }
 

@@ -4,8 +4,9 @@
 //! secret, the same shape ptolemy and tiletopia validate, so one token works
 //! across services.
 //!
-//! `POST /run` accepts a normal user token with the editor or admin role, or a
-//! role-free tool token carrying the exact `geodukt:run` scope.
+//! `POST /run` and the `/gp` tools accept a normal user token with the editor
+//! or admin role, or a role-free tool token carrying the exact `geodukt:run`
+//! scope.
 //! The run history, `GET /runs` and `GET /runs/{id}`, needs a valid token of any
 //! role, and the subject each record carries decides which of them come back.
 //! Tool tokens cannot read history.
