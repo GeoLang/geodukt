@@ -31,6 +31,10 @@ impl TransformOp for SimplifyTransform {
 
         Ok(FeatureCollection::new(features, input.crs.clone()))
     }
+
+    fn preserves_feature_order(&self) -> bool {
+        true
+    }
 }
 
 fn simplify_geometry(geom: &FeatureGeometry, epsilon: f64) -> FeatureGeometry {

@@ -40,6 +40,10 @@ impl TransformOp for ReprojectTransform {
 
         Ok(FeatureCollection::new(features, Some(to_crs.to_string())))
     }
+
+    fn preserves_feature_order(&self) -> bool {
+        true
+    }
 }
 
 fn reproject_geometry(geom: &FeatureGeometry, transform: &Transform) -> FeatureGeometry {

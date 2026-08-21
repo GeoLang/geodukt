@@ -40,6 +40,10 @@ impl TransformOp for ExpressionTransform {
 
         Ok(FeatureCollection::new(features, input.crs.clone()))
     }
+
+    fn preserves_feature_order(&self) -> bool {
+        true
+    }
 }
 
 /// Simple expression evaluator supporting built-in functions.

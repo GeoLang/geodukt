@@ -119,13 +119,7 @@ impl Run<'_> {
         }
 
         for transform in resident {
-            if let Err(error) = pull_resident(
-                transform,
-                self.order,
-                &mut self.data,
-                &mut self.report,
-                &self.router,
-            ) {
+            if let Err(error) = self.pull_resident(transform) {
                 return Err(fail(
                     self.order,
                     self.report.steps.clone(),
@@ -171,15 +165,54 @@ impl Run<'_> {
         ok.sort_by(|a, b| a.name.cmp(&b.name));
         for result in ok {
             self.report.record_step(&result.name, result.feature_count);
-            if let Some(input) = result.lineage_from {
-                self.lineage
-                    .record_passthrough(&result.name, &input, result.feature_count);
+            if let Some(hint) = result.lineage {
+                record_lineage(&mut self.lineage, &result.name, result.feature_count, hint);
             }
             if let Some(fc) = result.data {
                 self.data.insert(result.name, fc);
             }
         }
 
+        Ok(())
+    }
+
+    fn pull_resident(&mut self, transform: &Transform) -> Result<(), PipelineError> {
+        let needed = self.router.feeds_off_engine(self.order, &transform.name);
+        let materialize = needed || self.check_quality;
+        let (count, materialized) = self.router.pull(&transform.name, materialize)?;
+        if self.check_quality {
+            let Some(fc) = materialized.as_ref() else {
+                return Err(PipelineError::Transform {
+                    name: transform.name.clone(),
+                    message: "engine pull did not materialize for quality check".into(),
+                });
+            };
+            if let Some(message) = invalid_geometry_message(fc) {
+                return Err(PipelineError::Transform {
+                    name: transform.name.clone(),
+                    message,
+                });
+            }
+        }
+        let input_count = input_feature_count(&self.data, &self.report, &transform.input);
+        let preserves = self
+            .transforms
+            .get(&transform.operation)
+            .is_some_and(|op| op.preserves_feature_order());
+        self.report.record_step(&transform.name, count);
+        record_lineage(
+            &mut self.lineage,
+            &transform.name,
+            count,
+            LineageHint {
+                input: transform.input.clone(),
+                input_count,
+                preserves_order: preserves,
+            },
+        );
+        if needed && let Some(fc) = materialized {
+            self.data.insert(transform.name.clone(), fc);
+        }
         Ok(())
     }
 }
@@ -193,8 +226,14 @@ struct LocalOutcome {
     name: String,
     feature_count: usize,
     data: Option<FeatureCollection>,
-    lineage_from: Option<String>,
+    lineage: Option<LineageHint>,
     error: Option<PipelineError>,
+}
+
+struct LineageHint {
+    input: String,
+    input_count: usize,
+    preserves_order: bool,
 }
 
 fn run_local(
@@ -225,7 +264,7 @@ fn apply_transform(
                 name: transform.name.clone(),
                 feature_count: 0,
                 data: None,
-                lineage_from: None,
+                lineage: None,
                 error: Some(PipelineError::Transform {
                     name: transform.name.clone(),
                     message: format!("input '{}' not available", transform.input),
@@ -240,7 +279,7 @@ fn apply_transform(
                 name: transform.name.clone(),
                 feature_count: 0,
                 data: None,
-                lineage_from: None,
+                lineage: None,
                 error: Some(PipelineError::Transform {
                     name: transform.name.clone(),
                     message: format!("unknown operation '{}'", transform.operation),
@@ -250,30 +289,27 @@ fn apply_transform(
     };
     match op.apply(input_data, &transform.params) {
         Ok(result) => {
-            if check_quality {
-                let failures: Vec<_> =
-                    crate::quality::check_quality(&result, &[QualityRule::GeometryValid])
-                        .into_iter()
-                        .filter(|r| !r.passed)
-                        .collect();
-                if let Some(fail) = failures.first() {
-                    return LocalOutcome {
+            if check_quality && let Some(message) = invalid_geometry_message(&result) {
+                return LocalOutcome {
+                    name: transform.name.clone(),
+                    feature_count: 0,
+                    data: None,
+                    lineage: None,
+                    error: Some(PipelineError::Transform {
                         name: transform.name.clone(),
-                        feature_count: 0,
-                        data: None,
-                        lineage_from: None,
-                        error: Some(PipelineError::Transform {
-                            name: transform.name.clone(),
-                            message: fail.message.clone(),
-                        }),
-                    };
-                }
+                        message,
+                    }),
+                };
             }
             LocalOutcome {
                 name: transform.name.clone(),
                 feature_count: result.len(),
                 data: Some(result),
-                lineage_from: Some(transform.input.clone()),
+                lineage: Some(LineageHint {
+                    input: transform.input.clone(),
+                    input_count: input_data.len(),
+                    preserves_order: op.preserves_feature_order(),
+                }),
                 error: None,
             }
         }
@@ -281,7 +317,7 @@ fn apply_transform(
             name: transform.name.clone(),
             feature_count: 0,
             data: None,
-            lineage_from: None,
+            lineage: None,
             error: Some(error),
         },
     }
@@ -299,7 +335,7 @@ fn write_sink(
                 name: sink.name.clone(),
                 feature_count: 0,
                 data: None,
-                lineage_from: None,
+                lineage: None,
                 error: Some(PipelineError::Sink {
                     name: sink.name.clone(),
                     message: format!("input '{}' not available", sink.input),
@@ -312,33 +348,55 @@ fn write_sink(
             name: sink.name.clone(),
             feature_count: input_data.len(),
             data: None,
-            lineage_from: None,
+            lineage: None,
             error: None,
         },
         Err(error) => LocalOutcome {
             name: sink.name.clone(),
             feature_count: 0,
             data: None,
-            lineage_from: None,
+            lineage: None,
             error: Some(error),
         },
     }
 }
 
-fn pull_resident(
-    transform: &Transform,
-    order: &[&Node],
-    data: &mut HashMap<String, FeatureCollection>,
-    report: &mut ExecutionReport,
-    router: &EngineRouter,
-) -> Result<(), PipelineError> {
-    let wanted = router.feeds_off_engine(order, &transform.name);
-    let (count, materialized) = router.pull(&transform.name, wanted)?;
-    report.record_step(&transform.name, count);
-    if let Some(fc) = materialized {
-        data.insert(transform.name.clone(), fc);
+fn invalid_geometry_message(fc: &FeatureCollection) -> Option<String> {
+    crate::quality::check_quality(fc, &[QualityRule::GeometryValid])
+        .into_iter()
+        .find(|r| !r.passed)
+        .map(|r| r.message)
+}
+
+fn input_feature_count(
+    data: &HashMap<String, FeatureCollection>,
+    report: &ExecutionReport,
+    input: &str,
+) -> usize {
+    if let Some(fc) = data.get(input) {
+        fc.len()
+    } else {
+        report
+            .steps
+            .iter()
+            .rev()
+            .find(|s| s.name == input)
+            .map(|s| s.feature_count)
+            .unwrap_or(0)
     }
-    Ok(())
+}
+
+fn record_lineage(
+    tracker: &mut LineageTracker,
+    name: &str,
+    feature_count: usize,
+    hint: LineageHint,
+) {
+    if hint.preserves_order {
+        tracker.record_passthrough(name, &hint.input, feature_count);
+    } else {
+        tracker.record_node(name, &hint.input, feature_count, hint.input_count);
+    }
 }
 
 fn first_failure_name(order: &[&Node], results: &[LocalOutcome]) -> Option<String> {
@@ -473,5 +531,79 @@ path = "b.out"
             ])
         );
         assert!(report.steps.iter().all(|s| s.feature_count == 1));
+    }
+
+    struct TwoFeatures;
+    impl SourceReader for TwoFeatures {
+        fn read_source(&self, _source: &Source) -> Result<FeatureCollection, PipelineError> {
+            Ok(FeatureCollection::new(
+                vec![
+                    Feature {
+                        geometry: FeatureGeometry::Point(Point::new(0.0, 0.0)),
+                        properties: HashMap::from([("id".into(), Value::Integer(0))]),
+                    },
+                    Feature {
+                        geometry: FeatureGeometry::Point(Point::new(1.0, 1.0)),
+                        properties: HashMap::from([("id".into(), Value::Integer(1))]),
+                    },
+                ],
+                Some("EPSG:4326".into()),
+            ))
+        }
+    }
+
+    struct DropFirst;
+    impl TransformOp for DropFirst {
+        fn apply(
+            &self,
+            input: &FeatureCollection,
+            _params: &HashMap<String, toml::Value>,
+        ) -> Result<FeatureCollection, PipelineError> {
+            let features = input.features.iter().skip(1).cloned().collect();
+            Ok(FeatureCollection::new(features, input.crs.clone()))
+        }
+    }
+
+    #[test]
+    fn test_filter_lineage_does_not_claim_the_dropped_feature() {
+        let toml = r#"
+[project]
+name = "lineage"
+
+[[source]]
+name = "input"
+format = "geojson"
+path = "a.geojson"
+
+[[transform]]
+name = "kept"
+input = "input"
+operation = "drop_first"
+
+[[sink]]
+name = "out"
+input = "kept"
+format = "geojson"
+path = "a.out"
+"#;
+        let manifest = Manifest::from_toml(toml).unwrap();
+        let dag = crate::dag::Dag::from_manifest(&manifest).unwrap();
+        let order = dag.topological_order().unwrap();
+        let mut transforms: HashMap<String, Box<dyn TransformOp>> = HashMap::new();
+        transforms.insert("drop_first".into(), Box::new(DropFirst));
+        let (_report, lineage) =
+            ParallelScheduler::execute(&dag, &order, &TwoFeatures, &transforms, &MockWriter, false)
+                .unwrap();
+        assert!(
+            lineage.records.iter().any(|r| r.output_node == "kept"),
+            "the filter still records that kept came from input"
+        );
+        assert!(
+            !lineage
+                .sources_for("kept", 0)
+                .iter()
+                .any(|s| s.node == "input" && s.feature_idx == Some(0)),
+            "the remaining feature is input 1, not the dropped input 0"
+        );
     }
 }

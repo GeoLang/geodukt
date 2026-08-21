@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `quality = true` validates engine-resident transforms. A pull materializes
+  when quality is on so GeometryValid runs, and an invalid geometry fails that
+  transform the same way as the local path.
+- Lineage no longer records a 1:1 index mapping unless the operation preserves
+  feature order. Filter, clip and dissolve record node-level provenance.
+  Resident transforms write lineage too, so `lineage = true` is not an empty
+  `records` array when the work stayed on the engine.
+
 ### Changed
 - 2026-08-15: `Pipeline::execute` runs independent DAG waves through
   `ParallelScheduler`. Sources in a wave load together, engine-resident

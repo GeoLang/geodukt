@@ -38,6 +38,10 @@ impl TransformOp for BufferTransform {
 
         buffer_collection(input, distance, segments)
     }
+
+    fn preserves_feature_order(&self) -> bool {
+        true
+    }
 }
 
 /// Buffer every feature and return a new collection with the same CRS.

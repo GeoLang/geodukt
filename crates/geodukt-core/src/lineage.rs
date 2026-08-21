@@ -15,15 +15,21 @@ pub struct LineageTracker {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LineageRecord {
     pub output_node: String,
-    pub output_feature_idx: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_feature_idx: Option<usize>,
     pub source_nodes: Vec<SourceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_count: Option<usize>,
 }
 
 /// Reference to a source feature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceRef {
     pub node: String,
-    pub feature_idx: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_idx: Option<usize>,
 }
 
 impl LineageTracker {
@@ -35,8 +41,10 @@ impl LineageTracker {
     pub fn record(&mut self, output_node: &str, output_idx: usize, sources: Vec<SourceRef>) {
         self.records.push(LineageRecord {
             output_node: output_node.to_string(),
-            output_feature_idx: output_idx,
+            output_feature_idx: Some(output_idx),
             source_nodes: sources,
+            output_count: None,
+            input_count: None,
         });
     }
 
@@ -48,17 +56,37 @@ impl LineageTracker {
                 i,
                 vec![SourceRef {
                     node: input_node.to_string(),
-                    feature_idx: i,
+                    feature_idx: Some(i),
                 }],
             );
         }
+    }
+
+    /// Record that an output node came from an input node, without feature indices.
+    pub fn record_node(
+        &mut self,
+        output_node: &str,
+        input_node: &str,
+        output_count: usize,
+        input_count: usize,
+    ) {
+        self.records.push(LineageRecord {
+            output_node: output_node.to_string(),
+            output_feature_idx: None,
+            source_nodes: vec![SourceRef {
+                node: input_node.to_string(),
+                feature_idx: None,
+            }],
+            output_count: Some(output_count),
+            input_count: Some(input_count),
+        });
     }
 
     /// Get all sources for a given output feature.
     pub fn sources_for(&self, output_node: &str, feature_idx: usize) -> Vec<&SourceRef> {
         self.records
             .iter()
-            .filter(|r| r.output_node == output_node && r.output_feature_idx == feature_idx)
+            .filter(|r| r.output_node == output_node && r.output_feature_idx == Some(feature_idx))
             .flat_map(|r| &r.source_nodes)
             .collect()
     }
@@ -87,11 +115,11 @@ mod tests {
             vec![
                 SourceRef {
                     node: "transform_a".into(),
-                    feature_idx: 0,
+                    feature_idx: Some(0),
                 },
                 SourceRef {
                     node: "transform_a".into(),
-                    feature_idx: 1,
+                    feature_idx: Some(1),
                 },
             ],
         );

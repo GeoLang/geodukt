@@ -35,6 +35,10 @@ pub trait TransformOp: Send + Sync {
         input: &FeatureCollection,
         params: &HashMap<String, toml::Value>,
     ) -> Result<FeatureCollection, PipelineError>;
+
+    fn preserves_feature_order(&self) -> bool {
+        false
+    }
 }
 
 /// Trait for writing feature data to a sink.

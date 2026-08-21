@@ -78,6 +78,10 @@ impl TransformOp for SchemaMapTransform {
 
         Ok(FeatureCollection::new(features, input.crs.clone()))
     }
+
+    fn preserves_feature_order(&self) -> bool {
+        true
+    }
 }
 
 fn toml_to_value(v: &toml::Value) -> Value {

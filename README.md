@@ -14,9 +14,9 @@ Define transformations as a DAG of models. Geodukt resolves dependencies, valida
 - **Spatial transforms** — reproject, clip, buffer, simplify, centroid, dissolve, filter, expression, schema map. `spatial_join` is listed and unavailable
 - **No PROJ or GEOS**: geometry through [topoi](https://github.com/GeoLang/topoi), coordinate transforms through [projicio](https://github.com/GeoLang/projicio). The build is not pure Rust though: `geodukt-io` and `geodukt-server` take rusqlite with `bundled`, which compiles C SQLite, so a C toolchain has to be there
 - **Formats** — pipeline sources and sinks read and write GeoJSON, GeoPackage, Shapefile, and CSV
-- **Validation** — `/validate` checks the DAG. Set `quality = true` on `[project]` to reject invalid geometries after each local transform. Engine-resident transforms, meaning a `filter`, `schema_map` or `clip` sitting directly under a source, skip the check, so the same invalid geometry that fails through an `expression` passes through an engine `filter`
+- **Validation** — `/validate` checks the DAG. Set `quality = true` on `[project]` to reject invalid geometries after each transform, including engine-resident `filter`, `schema_map` and `clip`
 - **Incremental processing** — set `incremental = true` on `[project]` to hash sources and skip a run when none changed
-- **Lineage tracking** — set `lineage = true` on `[project]` to write `.geodukt/lineage.json` after a successful run. The mapping is positional, not real provenance: it names input feature i as the parent of output feature i whatever the operation did, so after a `filter` drops a feature the parents are wrong. Only local transforms record anything, so a pipeline whose transforms all run on the engine writes `{"records": []}`
+- **Lineage tracking** — set `lineage = true` on `[project]` to write `.geodukt/lineage.json` after a successful run. Feature-index mappings are recorded only when the operation preserves order. Filter, clip and dissolve record node-level provenance without inventing i to i. Resident transforms record the same way as local ones.
 - **REST API** — `/validate` checks a manifest without running it, `/operations` describes every operation and format a manifest may name, `/run` and `/runs` execute and record runs, and `/gp/*` exposes individual tools with JSON I/O
 
 ## Quick Start
