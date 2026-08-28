@@ -36,7 +36,7 @@ pub trait TransformOp: Send + Sync {
         params: &HashMap<String, toml::Value>,
     ) -> Result<FeatureCollection, PipelineError>;
 
-    /// Same as [`apply`], with the collection named by `join` when the
+    /// Same as [`Self::apply`], with the collection named by `join` when the
     /// operation takes a second input.
     fn apply_joined(
         &self,
