@@ -82,6 +82,14 @@ impl Dag {
                 .get(&transform.input)
                 .ok_or_else(|| DagError::UnknownInput(transform.input.clone()))?;
             graph.add_edge(*from, to, ());
+            if let Some(join) = transform.join_input()
+                && join != transform.input
+            {
+                let from = name_to_index
+                    .get(join)
+                    .ok_or_else(|| DagError::UnknownInput(join.to_string()))?;
+                graph.add_edge(*from, to, ());
+            }
         }
 
         for sink in &manifest.sink {
@@ -206,6 +214,73 @@ path = "out.geojson"
         // Source must come before transform, transform before sink
         let names: Vec<&str> = order.iter().map(|n| n.name()).collect();
         assert_eq!(names, vec!["input", "buffered", "output"]);
+    }
+
+    #[test]
+    fn test_dag_join_is_a_second_parent() {
+        let toml = r#"
+[project]
+name = "join"
+
+[[source]]
+name = "points"
+format = "geojson"
+path = "points.geojson"
+
+[[source]]
+name = "zones"
+format = "geojson"
+path = "zones.geojson"
+
+[[transform]]
+name = "tagged"
+input = "points"
+join = "zones"
+operation = "spatial_join"
+
+[[sink]]
+name = "out"
+input = "tagged"
+format = "geojson"
+path = "out.geojson"
+"#;
+        let manifest = Manifest::from_toml(toml).unwrap();
+        let dag = Dag::from_manifest(&manifest).unwrap();
+        assert_eq!(dag.node_count(), 4);
+        assert_eq!(dag.edge_count(), 3);
+
+        let names: Vec<&str> = dag
+            .topological_order()
+            .unwrap()
+            .iter()
+            .map(|n| n.name())
+            .collect();
+        let tagged = names.iter().position(|n| *n == "tagged").unwrap();
+        assert!(names[..tagged].contains(&"points"));
+        assert!(names[..tagged].contains(&"zones"));
+        assert_eq!(names[tagged + 1], "out");
+    }
+
+    #[test]
+    fn test_dag_unknown_join_is_unknown_input() {
+        let toml = r#"
+[project]
+name = "join"
+
+[[source]]
+name = "points"
+format = "geojson"
+path = "points.geojson"
+
+[[transform]]
+name = "tagged"
+input = "points"
+join = "nowhere"
+operation = "spatial_join"
+"#;
+        let manifest = Manifest::from_toml(toml).unwrap();
+        let result = Dag::from_manifest(&manifest);
+        assert!(matches!(result, Err(DagError::UnknownInput(name)) if name == "nowhere"));
     }
 
     #[test]

@@ -65,6 +65,9 @@ pub fn generate_markdown(manifest: &Manifest) -> String {
             "    {} --> |{}| {}\n",
             t.input, t.operation, t.name
         ));
+        if let Some(join) = t.join_input() {
+            doc.push_str(&format!("    {join} --> |join| {}\n", t.name));
+        }
     }
     for s in &manifest.sink {
         doc.push_str(&format!(

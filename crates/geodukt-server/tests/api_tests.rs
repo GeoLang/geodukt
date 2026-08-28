@@ -358,7 +358,14 @@ async fn test_operations_catalog_flags_what_cannot_run() {
     let ops = catalog["operations"].as_array().unwrap();
 
     let join = ops.iter().find(|op| op["name"] == "spatial_join").unwrap();
-    assert!(join["unavailable"].is_string(), "{join}");
+    assert!(join.get("unavailable").is_none(), "{join}");
+    let join_param = join["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "join")
+        .unwrap();
+    assert_eq!(join_param["required"], true);
 
     let centroid = ops.iter().find(|op| op["name"] == "centroid").unwrap();
     assert!(centroid.get("unavailable").is_none(), "{centroid}");
@@ -607,7 +614,7 @@ async fn test_failure_mid_pipeline_marks_later_steps_not_run() {
     )
     .unwrap();
 
-    // spatial_join is registered but has no join dataset, so it always fails
+    // reproject to a CRS that does not exist fails after the source has run
     let manifest = format!(
         r#"
 [project]
@@ -619,13 +626,14 @@ format = "geojson"
 path = "{input}"
 
 [[transform]]
-name = "joined"
+name = "projected"
 input = "pts"
-operation = "spatial_join"
+operation = "reproject"
+to_crs = "not-a-crs"
 
 [[sink]]
 name = "out"
-input = "joined"
+input = "projected"
 format = "geojson"
 path = "{output}"
 "#,
@@ -640,10 +648,77 @@ path = "{output}"
     assert_eq!(steps.len(), 3);
     assert_eq!(steps[0]["name"], "pts");
     assert_eq!(steps[0]["status"], "Completed");
-    assert_eq!(steps[1]["name"], "joined");
+    assert_eq!(steps[1]["name"], "projected");
     assert!(steps[1]["status"]["Failed"].is_string(), "{record}");
     assert_eq!(steps[2]["name"], "out");
     assert_eq!(steps[2]["status"], "NotRun");
+}
+
+#[tokio::test]
+async fn test_run_spatial_join_copies_properties_from_the_join_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let points = dir.path().join("points.geojson");
+    let zones = dir.path().join("zones.geojson");
+    let output = dir.path().join("out.geojson");
+    std::fs::write(
+        &points,
+        r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"id":1},
+             "geometry":{"type":"Point","coordinates":[5,5]}},
+            {"type":"Feature","properties":{"id":2},
+             "geometry":{"type":"Point","coordinates":[20,20]}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &zones,
+        r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"zone":"residential"},
+             "geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}}]}"#,
+    )
+    .unwrap();
+
+    let manifest = format!(
+        r#"
+[project]
+name = "join"
+
+[[source]]
+name = "points"
+format = "geojson"
+path = "{points}"
+
+[[source]]
+name = "zones"
+format = "geojson"
+path = "{zones}"
+
+[[transform]]
+name = "tagged"
+input = "points"
+join = "zones"
+operation = "spatial_join"
+
+[[sink]]
+name = "out"
+input = "tagged"
+format = "geojson"
+path = "{output}"
+"#,
+        points = points.display(),
+        zones = zones.display(),
+        output = output.display()
+    );
+
+    let (status, record) = post("/run", serde_json::json!({"manifest": manifest})).await;
+    assert_eq!(status, StatusCode::OK, "{record}");
+    assert_eq!(record["status"], "Completed");
+
+    let body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+    let features = body["features"].as_array().unwrap();
+    assert_eq!(features.len(), 2);
+    assert_eq!(features[0]["properties"]["joined_zone"], "residential");
+    assert!(features[1]["properties"].get("joined_zone").is_none());
 }
 
 /// Records written before steps carried a status only ever came from runs that

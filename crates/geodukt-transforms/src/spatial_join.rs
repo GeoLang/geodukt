@@ -8,7 +8,7 @@ use geodukt_core::pipeline::{PipelineError, TransformOp};
 use topoi_core::{contains, intersection, segment_intersection};
 
 /// Spatial join operation: enriches features with properties from spatially related features.
-/// Requires a secondary dataset loaded via `join_to` param.
+/// The second dataset is the collection named by `join`, or `with_dataset`.
 #[derive(Default)]
 pub struct SpatialJoinTransform {
     /// The dataset to join against.
@@ -33,18 +33,26 @@ impl TransformOp for SpatialJoinTransform {
         input: &FeatureCollection,
         params: &HashMap<String, toml::Value>,
     ) -> Result<FeatureCollection, PipelineError> {
+        self.apply_joined(input, self.join_dataset.as_ref(), params)
+    }
+
+    fn apply_joined(
+        &self,
+        input: &FeatureCollection,
+        join: Option<&FeatureCollection>,
+        params: &HashMap<String, toml::Value>,
+    ) -> Result<FeatureCollection, PipelineError> {
         let join_type = params
             .get("join_type")
             .and_then(|v: &toml::Value| v.as_str())
             .unwrap_or("intersects");
 
-        let join_data = self
-            .join_dataset
-            .as_ref()
-            .ok_or_else(|| PipelineError::Transform {
-                name: "spatial_join".into(),
-                message: "no join dataset provided".into(),
-            })?;
+        let join_data =
+            join.or(self.join_dataset.as_ref())
+                .ok_or_else(|| PipelineError::Transform {
+                    name: "spatial_join".into(),
+                    message: "no join dataset provided".into(),
+                })?;
 
         let features: Vec<Feature> = input
             .features
@@ -74,6 +82,10 @@ impl TransformOp for SpatialJoinTransform {
             .collect();
 
         Ok(FeatureCollection::new(features, input.crs.clone()))
+    }
+
+    fn preserves_feature_order(&self) -> bool {
+        true
     }
 }
 
@@ -257,8 +269,10 @@ mod tests {
         ];
         let input_fc = FeatureCollection::new(input_features, None);
 
-        let transform = SpatialJoinTransform::with_dataset(join_fc);
-        let result = transform.apply(&input_fc, &HashMap::new()).unwrap();
+        let transform = SpatialJoinTransform::new();
+        let result = transform
+            .apply_joined(&input_fc, Some(&join_fc), &HashMap::new())
+            .unwrap();
         assert_eq!(result.len(), 2);
         // First point is inside polygon, should have joined property
         assert_eq!(

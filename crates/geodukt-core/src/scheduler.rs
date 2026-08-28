@@ -287,7 +287,25 @@ fn apply_transform(
             };
         }
     };
-    match op.apply(input_data, &transform.params) {
+    let join_data = match transform.join_input() {
+        Some(name) => match data.get(name) {
+            Some(collection) => Some(collection),
+            None => {
+                return LocalOutcome {
+                    name: transform.name.clone(),
+                    feature_count: 0,
+                    data: None,
+                    lineage: None,
+                    error: Some(PipelineError::Transform {
+                        name: transform.name.clone(),
+                        message: format!("join '{name}' not available"),
+                    }),
+                };
+            }
+        },
+        None => None,
+    };
+    match op.apply_joined(input_data, join_data, &transform.params) {
         Ok(result) => {
             if check_quality && let Some(message) = invalid_geometry_message(&result) {
                 return LocalOutcome {

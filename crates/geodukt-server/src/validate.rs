@@ -436,7 +436,7 @@ operation = "buffr"
     }
 
     #[test]
-    fn test_unavailable_operation_is_rejected() {
+    fn test_spatial_join_without_join_is_rejected() {
         let problem = validate_manifest(
             r#"
 [project]
@@ -455,11 +455,38 @@ operation = "spatial_join"
         )
         .unwrap_err();
         assert_eq!(problem.kind, ProblemKind::Operation);
-        assert!(
-            problem.message.contains("second dataset"),
-            "{}",
-            problem.message
-        );
+        assert!(problem.message.contains("join"), "{}", problem.message);
+    }
+
+    #[test]
+    fn test_spatial_join_with_join_is_accepted() {
+        let plan = validate_manifest(
+            r#"
+[project]
+name = "p"
+
+[[source]]
+name = "points"
+format = "geojson"
+path = "points.geojson"
+
+[[source]]
+name = "zones"
+format = "geojson"
+path = "zones.geojson"
+
+[[transform]]
+name = "tagged"
+input = "points"
+join = "zones"
+operation = "spatial_join"
+"#,
+        )
+        .unwrap();
+        let names: Vec<&str> = plan.steps.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"points"));
+        assert!(names.contains(&"zones"));
+        assert_eq!(names[2], "tagged");
     }
 
     /// A manifest with one transform over one source, so a test only has to say
@@ -500,6 +527,7 @@ input = "src"
             "min_x",
             "min_x = 0.0\nmin_y = 0.0\nmax_x = 1.0\nmax_y = 1.0",
         ),
+        ("spatial_join", "join", "join = \"src\""),
     ];
 
     #[test]

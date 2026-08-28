@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `spatial_join` runs from a manifest. `join` names the earlier step to join
+  against, the DAG treats it as a second parent, and `/validate` rejects a
+  join that leaves it out. `join_type` is still optional (`intersects` by
+  default).
+
 ### Fixed
 - `quality = true` validates engine-resident transforms. A pull materializes
   when quality is on so GeometryValid runs, and an invalid geometry fails that
@@ -25,8 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 2026-08-15: `[project] incremental`, `lineage` and `quality` are real.
   Incremental hashes sources and skips a run when none changed; lineage
   writes `.geodukt/lineage.json`; quality fails a transform with invalid
-  geometries. `diff` still compares manifest names. `spatial_join` stays
-  unavailable.
+  geometries. `diff` still compares manifest names.
 - 2026-08-12: the cdc feature hash encodes geometry and property values itself
   instead of feeding their `Debug` output to the hasher, so a topoi release that
   reformats `FeatureGeometry` no longer moves geodukt's hashes. Every variant is

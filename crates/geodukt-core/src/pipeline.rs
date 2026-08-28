@@ -36,6 +36,18 @@ pub trait TransformOp: Send + Sync {
         params: &HashMap<String, toml::Value>,
     ) -> Result<FeatureCollection, PipelineError>;
 
+    /// Same as [`apply`], with the collection named by `join` when the
+    /// operation takes a second input.
+    fn apply_joined(
+        &self,
+        input: &FeatureCollection,
+        join: Option<&FeatureCollection>,
+        params: &HashMap<String, toml::Value>,
+    ) -> Result<FeatureCollection, PipelineError> {
+        let _ = join;
+        self.apply(input, params)
+    }
+
     fn preserves_feature_order(&self) -> bool {
         false
     }

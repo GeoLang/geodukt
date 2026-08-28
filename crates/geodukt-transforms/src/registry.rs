@@ -329,17 +329,24 @@ const SIMPLIFY: OperationSpec = OperationSpec {
 const SPATIAL_JOIN: OperationSpec = OperationSpec {
     name: "spatial_join",
     description: "Copy properties from a second dataset onto spatially related features",
-    parameters: &[ParamSpec {
-        name: "join_type",
-        param_type: "string",
-        required: false,
-        default: Some("\"intersects\""),
-        description: "One of intersects, contains, within",
-    }],
+    parameters: &[
+        ParamSpec {
+            name: "join",
+            param_type: "string",
+            required: true,
+            default: None,
+            description: "Name of the earlier step whose features to join against",
+        },
+        ParamSpec {
+            name: "join_type",
+            param_type: "string",
+            required: false,
+            default: Some("\"intersects\""),
+            description: "One of intersects, contains, within",
+        },
+    ],
     requires_any: None,
-    // a transform gets one input, so a manifest has no way to name the second
-    // dataset. reachable from Rust through SpatialJoinTransform::with_dataset.
-    unavailable: Some("a manifest cannot supply the second dataset to join against"),
+    unavailable: None,
     build: || Box::new(SpatialJoinTransform::new()),
 };
 
@@ -449,13 +456,13 @@ mod tests {
     }
 
     #[test]
-    fn test_spatial_join_is_the_only_unavailable_operation() {
+    fn test_every_listed_operation_is_available() {
         let unavailable: Vec<&str> = operations()
             .iter()
             .filter(|op| !op.is_available())
             .map(|op| op.name)
             .collect();
-        assert_eq!(unavailable, vec!["spatial_join"]);
+        assert_eq!(unavailable, Vec::<&str>::new());
     }
 
     /// A parameter the manifest has to supply cannot also have a value that

@@ -59,6 +59,16 @@ pub struct Transform {
     pub params: std::collections::HashMap<String, toml::Value>,
 }
 
+impl Transform {
+    /// The extra input `spatial_join` reads, when the manifest named one.
+    pub fn join_input(&self) -> Option<&str> {
+        self.params
+            .get("join")
+            .and_then(|value| value.as_str())
+            .filter(|name| !name.is_empty())
+    }
+}
+
 /// A data sink (output) node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sink {

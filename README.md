@@ -11,7 +11,7 @@ Define transformations as a DAG of models. Geodukt resolves dependencies, valida
 
 - **Declarative pipeline definitions** — TOML manifest files describe sources, transforms, and sinks
 - **DAG execution engine** — automatic dependency resolution, then a run as waves of independent nodes; the sources and the local work inside one wave run concurrently under rayon
-- **Spatial transforms** — reproject, clip, buffer, simplify, centroid, dissolve, filter, expression, schema map. `spatial_join` is listed and unavailable
+- **Spatial transforms** — reproject, clip, buffer, simplify, centroid, dissolve, filter, expression, schema map, spatial_join
 - **No PROJ or GEOS**: geometry through [topoi](https://github.com/GeoLang/topoi), coordinate transforms through [projicio](https://github.com/GeoLang/projicio). The build is not pure Rust though: `geodukt-io` and `geodukt-server` take rusqlite with `bundled`, which compiles C SQLite, so a C toolchain has to be there
 - **Formats** — pipeline sources and sinks read and write GeoJSON, GeoPackage, Shapefile, and CSV
 - **Validation** — `/validate` checks the DAG. Set `quality = true` on `[project]` to reject invalid geometries after each transform, including engine-resident `filter`, `schema_map` and `clip`
@@ -187,15 +187,16 @@ parameter 'distance' (Buffer distance in meters, negative to shrink a polygon)
 ```
 
 Required today: `buffer.distance`, `simplify.epsilon`, `reproject.to_crs`,
-`filter.field`, `filter.equals`, `expression.expressions`, and all four edges of
-`clip`, which takes the whole box or none of it. `schema_map` instead carries
-`requires_any`, a group it needs at least one member of, because a schema map
-that renames, drops and adds nothing does nothing.
+`filter.field`, `filter.equals`, `expression.expressions`, `spatial_join.join`,
+and all four edges of `clip`, which takes the whole box or none of it.
+`schema_map` instead carries `requires_any`, a group it needs at least one
+member of, because a schema map that renames, drops and adds nothing does
+nothing.
 
-An operation carrying an `unavailable` field
-cannot run from a manifest, and `/validate` rejects it: `spatial_join` is
-in that state because a transform receives a single input, so a manifest has no
-way to name the second dataset to join against.
+`spatial_join` takes a second input named by `join`, which is the earlier step
+whose features to copy properties from. The DAG treats that name as a second
+parent, so both sides run before the join. `join_type` is optional
+(`intersects` by default; also `contains` and `within`).
 
 ### POST /validate
 
