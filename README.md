@@ -332,7 +332,7 @@ geodukt-transforms — spatial operations (reproject, clip, buffer, dissolve, et
 geodukt-io      — source/sink connectors (GeoJSON, GeoPackage, Shapefile, CSV)
 geodukt-server  — REST API for validation, pipeline runs, and geoprocessing tools
 geodukt-cli     — command-line interface
-geodukt-plugins — unused, nothing imports it and its round trip does not carry geometry
+geodukt-plugins — unused, geodukt-cli lists it as a dependency but no code imports it, and its round trip does not carry geometry
 ```
 
 ## License
