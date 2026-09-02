@@ -233,17 +233,15 @@ which part to fix:
 Same body as `/validate`. Executes the manifest and records the attempt, whether
 it succeeds or not, so every run is retrievable from `/runs`.
 
-When `PLATFORM_JWT_SECRET` is set, `/run` accepts either a normal platform JWT
-with the editor or admin role, or a role-free tool JWT with
-`token_use: "tool"` and `scope: ["geodukt:run"]`. Both record the caller's
-`sub` on the run. A marked tool token never falls back to `role`. An empty or
-wrong scope array is 403. A missing, non-array, or non-string scope claim, an
-unknown `token_use`, or a role-bearing tool token is 401. What stays open is more than
-`/validate`, `/operations` and `/health`: every `/gp/*` route is open too, so a
-gated server still answers `/gp/catalog` and takes arbitrary GeoJSON on
-`/gp/buffer`, `/gp/clip`, `/gp/dissolve`, `/gp/simplify` and `/gp/centroid`
-from an unauthenticated caller. Unset means no gate, the standalone single-user
-flow.
+When `PLATFORM_JWT_SECRET` is set, `/run` and every `/gp/*` route, `/gp/catalog`
+included, accept either a normal platform JWT with the editor or admin role, or
+a role-free tool JWT with `token_use: "tool"` and `scope: ["geodukt:run"]`. A
+run records the caller's `sub` either way. A marked tool token never falls back
+to `role`. An empty or wrong scope array is 403. A missing, non-array, or
+non-string scope claim, an unknown `token_use`, or a role-bearing tool token is
+401. `/health`, `/operations` and `/validate` stay open on a gated server,
+because headless planning and the eval harness call them without a token. Unset
+means no gate, the standalone single-user flow.
 
 Both outcomes return a run record, so a caller parses one shape either way. The
 `status` field tells them apart:
@@ -332,7 +330,6 @@ geodukt-transforms — spatial operations (reproject, clip, buffer, dissolve, et
 geodukt-io      — source/sink connectors (GeoJSON, GeoPackage, Shapefile, CSV)
 geodukt-server  — REST API for validation, pipeline runs, and geoprocessing tools
 geodukt-cli     — command-line interface
-geodukt-plugins — unused, geodukt-cli lists it as a dependency but no code imports it, and its round trip does not carry geometry
 ```
 
 ## License

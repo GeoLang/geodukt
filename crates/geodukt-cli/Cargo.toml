@@ -13,7 +13,6 @@ geodukt-core = { path = "../geodukt-core" }
 geodukt-transforms = { path = "../geodukt-transforms" }
 geodukt-io = { path = "../geodukt-io" }
 geodukt-server = { path = "../geodukt-server" }
-geodukt-plugins = { path = "../geodukt-plugins" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 

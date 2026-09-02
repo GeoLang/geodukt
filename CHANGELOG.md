@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   join that leaves it out. `join_type` is still optional (`intersects` by
   default).
 
+### Removed
+- 2026-09-02: the `geodukt-plugins` crate and the `cloud_io` and `database_io`
+  modules of `geodukt-io`. No code called any of them. The `object_store`,
+  `tokio`, `bytes` and `futures` dependencies of `geodukt-io` went with them.
+
 ### Fixed
 - `quality = true` validates engine-resident transforms. A pull materializes
   when quality is on so GeometryValid runs, and an invalid geometry fails that
