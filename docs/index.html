@@ -193,8 +193,9 @@
     <div class="hero">
         <h1>Geodukt</h1>
         <p class="subtitle">
-            A declarative geospatial ETL pipeline — <strong>dbt for spatial data</strong>.
-            Define transforms as a DAG. Geodukt resolves dependencies and materializes outputs.
+            Wire ten spatial transforms into a DAG in one TOML file. Geodukt works out the
+            order, runs the graph wave by wave, and writes each sink as GeoJSON, GeoPackage,
+            Shapefile or CSV.
         </p>
         <div class="badges">
             <span class="badge">Rust</span>
@@ -212,7 +213,7 @@
             <div class="features">
                 <div class="feature-card">
                     <h3>Declarative Pipelines</h3>
-                    <p>Define sources, transforms, and sinks in TOML. No imperative scripting — just declare what you want.</p>
+                    <p>Define sources, transforms, and sinks in TOML. The file says what the pipeline is, not the order to run it in.</p>
                 </div>
                 <div class="feature-card">
                     <h3>DAG Execution</h3>
@@ -240,11 +241,11 @@
                 </div>
                 <div class="feature-card">
                     <h3>Validation First</h3>
-                    <p>Check your DAG for cycles, unknown references, and duplicate names before running. Fail fast, fix early.</p>
+                    <p>Check your DAG for cycles, unknown references, and duplicate names before running.</p>
                 </div>
                 <div class="feature-card">
                     <h3>Execution Reports</h3>
-                    <p>After each run, see feature counts per stage. Know exactly what flowed through your pipeline.</p>
+                    <p>A run record carries the feature count and status of every step, including the ones a failed run never reached.</p>
                 </div>
                 <div class="feature-card">
                     <h3>GeoLang Ecosystem</h3>

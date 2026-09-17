@@ -3,9 +3,9 @@
 [![CI](https://github.com/GeoLang/geodukt/actions/workflows/ci.yml/badge.svg)](https://github.com/GeoLang/geodukt/actions)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
-A declarative geospatial ETL pipeline — **dbt for spatial data**.
+A declarative geospatial ETL pipeline: ten spatial transforms over GeoJSON, GeoPackage, Shapefile and CSV, wired up in one TOML manifest.
 
-Define transformations as a DAG of models. Geodukt resolves dependencies, validates geometries, and materializes outputs to your target format.
+Geodukt resolves the dependencies between sources, transforms and sinks, runs the graph wave by wave, and writes each sink in the format it names.
 
 ## Features
 

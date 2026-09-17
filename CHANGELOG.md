@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- 2026-09-16: the README and the docs page no longer call geodukt "dbt for
+  spatial data". It runs ten spatial transforms over four formats from a TOML
+  manifest, which the taglines now say instead.
+
 ### Added
 - `spatial_join` runs from a manifest. `join` names the earlier step to join
   against, the DAG treats it as a second parent, and `/validate` rejects a
