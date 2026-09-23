@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default).
 
 ### Removed
+- 2026-09-23: the `cache`, `cdc`, `streaming`, `template`, `testing` and
+  `visual` modules of `geodukt-core`, which nothing in the workspace or any
+  sibling repo used: `crates/geodukt-core/src/cache.rs` (last held at
+  15ba894), `cdc.rs` (9cb0492), `streaming.rs` (27fb9f4), `template.rs`
+  (15ba894), `testing.rs` (27fb9f4) and `visual.rs` (099a356).
 - 2026-09-02: the `geodukt-plugins` crate and the `cloud_io` and `database_io`
   modules of `geodukt-io`. No code called any of them. The `object_store`,
   `tokio`, `bytes` and `futures` dependencies of `geodukt-io` went with them.
