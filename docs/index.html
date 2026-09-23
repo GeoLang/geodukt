@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Geodukt — Declarative Geospatial ETL</title>
+    <title>Geodukt: Declarative Geospatial ETL</title>
     <style>
         :root {
             --primary: #7c3aed;
@@ -193,7 +193,7 @@
     <div class="hero">
         <h1>Geodukt</h1>
         <p class="subtitle">
-            Wire ten spatial transforms into a DAG in one TOML file. Geodukt works out the
+            Define a DAG of ten spatial transforms in one TOML file. Geodukt works out the
             order, runs the graph wave by wave, and writes each sink as GeoJSON, GeoPackage,
             Shapefile or CSV.
         </p>
@@ -229,7 +229,7 @@
                 </div>
                 <div class="feature-card">
                     <h3>CLI Tool</h3>
-                    <p><code>geodukt run</code>, <code>validate</code>, <code>graph</code>, <code>init</code>, <code>serve</code>, <code>docs</code>, <code>diff</code>. Fast feedback on your pipeline before execution.</p>
+                    <p><code>geodukt run</code>, <code>validate</code>, <code>graph</code>, <code>init</code>, <code>serve</code>, <code>docs</code>, <code>diff</code>. <code>validate</code> checks the graph and the required parameters without reading any data.</p>
                 </div>
                 <div class="feature-card">
                     <h3>Trait-Based Internals</h3>
@@ -241,15 +241,15 @@
                 </div>
                 <div class="feature-card">
                     <h3>Validation First</h3>
-                    <p>Check your DAG for cycles, unknown references, and duplicate names before running.</p>
+                    <p><code>/validate</code> and <code>geodukt validate</code> reject cycles, unknown inputs, duplicate names and missing required parameters before anything runs.</p>
                 </div>
                 <div class="feature-card">
                     <h3>Execution Reports</h3>
                     <p>A run record carries the feature count and status of every step, including the ones a failed run never reached.</p>
                 </div>
                 <div class="feature-card">
-                    <h3>GeoLang Ecosystem</h3>
-                    <p>Part of the GeoLang stack. Cross-service wiring to Geokode and Jung is not implemented yet.</p>
+                    <h3>No PROJ, GEOS or GDAL</h3>
+                    <p>Geometry comes from <a href="https://github.com/GeoLang/topoi">topoi</a> and coordinate transforms from <a href="https://github.com/GeoLang/projicio">projicio</a>. The build still needs a C toolchain for the bundled SQLite.</p>
                 </div>
             </div>
         </section>
@@ -289,12 +289,11 @@ path = "output/commercial_centroids.geojson"</code></pre>
 
         <section>
             <h2>Quick Start</h2>
-<pre><code># Initialize a project
+<pre><code># Create my-pipeline/ with geodukt.toml, data/ and output/
 geodukt init my-pipeline
 cd my-pipeline
 
-# Edit geodukt.toml to define your pipeline
-# Add data to data/ directory
+# Edit geodukt.toml, and put the source file it names in data/
 
 # Validate the DAG
 geodukt validate
@@ -302,7 +301,7 @@ geodukt validate
 # Run the pipeline
 geodukt run
 
-# Visualize execution order
+# Print the execution order
 geodukt graph
 
 # Serve the REST API
@@ -323,7 +322,7 @@ geodukt serve --bind 127.0.0.1:8080</code></pre>
                 <tr><td>POST</td><td><code>/run</code></td><td>Execute a manifest and record the attempt, successful or not</td></tr>
                 <tr><td>GET</td><td><code>/runs</code></td><td>The recorded runs the caller may read, including failed ones</td></tr>
                 <tr><td>GET</td><td><code>/runs/{id}</code></td><td>One run, including the manifest it ran</td></tr>
-                <tr><td>GET</td><td><code>/gp/catalog</code></td><td>The subset of operations exposed as one-shot tools</td></tr>
+                <tr><td>GET</td><td><code>/gp/catalog</code></td><td>The operations exposed as single tools: buffer, centroid, clip, dissolve, simplify</td></tr>
                 <tr><td>POST</td><td><code>/gp/{tool}</code></td><td>Run one operation over GeoJSON in the request body</td></tr>
             </table>
             <p>
@@ -347,12 +346,12 @@ curl -X POST localhost:8080/validate \
             <p>
                 The <code>kind</code> field is <code>toml</code> (400, not valid TOML or not the manifest
                 schema), <code>graph</code> (422, unknown input, duplicate name, or a cycle),
-                <code>operation</code> (422, an operation that does not exist or cannot run), or
-                <code>format</code> (422, a format that is not wired up).
+                <code>operation</code> (422, an operation that does not exist or a missing required parameter), or
+                <code>format</code> (422, a format geodukt cannot read or write).
             </p>
             <p>
-                <code>/run</code> records every attempt and answers with a run record either way, so one
-                shape covers both outcomes. A run that completes is 200 with <code>status</code> set to
+                <code>/run</code> records every run that starts and answers with a run record either way, so one
+                shape covers both outcomes. A body that is not a usable manifest is rejected before a run starts and is not recorded. A run that completes is 200 with <code>status</code> set to
                 <code>"Completed"</code>. A run that fails is 422 with <code>status</code> set to
                 <code>{"Failed": "&lt;reason&gt;"}</code>, and the record stays in <code>/runs</code> with
                 the manifest that produced it. 422 rather than 500 because the manifest was sound and it
@@ -361,7 +360,7 @@ curl -X POST localhost:8080/validate \
             <p>
                 With <code>PLATFORM_JWT_SECRET</code> set, <code>/run</code> and the <code>/gp/*</code> routes
                 accept a platform JWT with the editor or admin role, or a role-free tool JWT with
-                <code>token_use: "tool"</code> and <code>scope: ["geodukt:run"]</code>. A run records the caller's <code>sub</code>. Marked tool tokens never fall back to a role. An empty or wrong scope array is 403, and a missing or malformed scope claim is 401. The
+                <code>token_use: "tool"</code> and <code>scope: ["geodukt:run"]</code>. A run records the caller's <code>sub</code>. Marked tool tokens never fall back to a role. An empty or wrong scope array is 403, and a missing or malformed scope claim is 401. 
                 <code>/runs</code> needs a token of any role: an admin reads every caller's runs, every
                 other role reads only its own, scoped tool tokens are 403, and someone else's run is a 404. Unset means no gate,
                 the standalone single-user flow.
