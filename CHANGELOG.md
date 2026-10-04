@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- 2026-10-04: `geodukt serve --caller-root <DIR>`, repeatable. With it set,
+  `/run` refuses a source or sink path that does not resolve inside
+  `<DIR>/<caller directory>` for the token's `sub`, and refuses a request with
+  no verified caller. Without it, paths were opened as given, so an editor
+  could read or write another user's files.
+- 2026-10-04: the GeoPackage reader and writer refuse a layer name or property
+  key outside `[A-Za-z0-9_]`. Both were formatted into SQL, and the writer ran
+  them with `execute_batch`, so a manifest could run any SQL, `ATTACH` included.
+
 ### Changed
 - 2026-09-16: the README and the docs page no longer call geodukt "dbt for
   spatial data". It runs ten spatial transforms over four formats from a TOML

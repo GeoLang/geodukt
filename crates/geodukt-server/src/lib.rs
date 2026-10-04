@@ -3,6 +3,7 @@
 //! REST API for triggering and monitoring geodukt pipelines.
 
 pub mod auth;
+pub mod caller_roots;
 pub mod gp_tools;
 pub mod runs;
 pub mod validate;
@@ -17,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use auth::{AuthConfig, Caller};
+use caller_roots::CallerRoots;
 use runs::now_rfc3339;
 pub use runs::{RunRecord, RunStatus, RunStore, StepRecord, StepStatus};
 
@@ -30,6 +32,7 @@ use geodukt_transforms::registry::{OperationSpec, default_registry, operations};
 struct AppState {
     runs: RunStore,
     auth: AuthConfig,
+    caller_roots: CallerRoots,
 }
 
 /// Request to trigger a pipeline run.
@@ -47,14 +50,19 @@ pub fn create_router() -> Router {
 /// named by [`runs::RUNS_DB_ENV`].
 pub fn create_router_with_auth(auth: AuthConfig) -> Router {
     let runs = RunStore::from_env().expect("could not open the run history database");
-    create_router_with_store(auth, runs)
+    create_router_with_store(auth, runs, CallerRoots::default())
 }
 
 /// Create the server router over an already opened run history.
-pub fn create_router_with_store(auth: AuthConfig, runs: RunStore) -> Router {
+pub fn create_router_with_store(
+    auth: AuthConfig,
+    runs: RunStore,
+    caller_roots: CallerRoots,
+) -> Router {
     let state = AppState {
         runs,
         auth: auth.clone(),
+        caller_roots,
     };
 
     Router::new()
@@ -124,6 +132,7 @@ enum RunError {
     /// The manifest describes work the engine cannot carry out, caught before
     /// anything ran, so there is no attempt to record. Same body as `/validate`.
     Rejected(validate::Problem),
+    Refused(StatusCode, String),
     /// The pipeline ran and failed. The attempt is recorded, and the record
     /// comes back so the caller has the id and the reason.
     Failed(Box<RunRecord>),
@@ -137,6 +146,7 @@ impl IntoResponse for RunError {
         match self {
             RunError::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
             RunError::Rejected(problem) => (problem.status(), Json(problem)).into_response(),
+            RunError::Refused(status, message) => (status, message).into_response(),
             // the manifest was well formed and the work it described could not be
             // carried out, which is the request's content rather than a server
             // fault, so 422 rather than 500. a 500 would tell a client to retry
@@ -158,8 +168,12 @@ async fn trigger_run(
     caller: Caller,
     Json(req): Json<RunRequest>,
 ) -> Result<Json<RunRecord>, RunError> {
-    let manifest = Manifest::from_toml(&req.manifest)
+    let mut manifest = Manifest::from_toml(&req.manifest)
         .map_err(|e| RunError::BadRequest(format!("Invalid manifest: {e}")))?;
+    state
+        .caller_roots
+        .confine(&mut manifest, caller.sub().as_deref())
+        .map_err(|(status, message)| RunError::Refused(status, message))?;
 
     let pipeline = Pipeline::new(manifest.clone())
         .map_err(|e| RunError::BadRequest(format!("Pipeline error: {e}")))?;
@@ -266,8 +280,13 @@ async fn get_run(
 }
 
 /// Start the server on the given address.
-pub async fn serve(bind: &str) -> std::io::Result<()> {
-    let router = create_router();
+pub async fn serve(bind: &str, caller_roots: &[std::path::PathBuf]) -> std::io::Result<()> {
+    let runs = RunStore::from_env().map_err(std::io::Error::other)?;
+    let router = create_router_with_store(
+        AuthConfig::from_env(),
+        runs,
+        CallerRoots::new(caller_roots)?,
+    );
     let listener = tokio::net::TcpListener::bind(bind).await?;
     axum::serve(listener, router.into_make_service())
         .await

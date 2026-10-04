@@ -41,6 +41,12 @@ enum Command {
         /// Address to bind to
         #[arg(short, long, default_value = "127.0.0.1:8080")]
         bind: String,
+        #[arg(
+            long = "caller-root",
+            value_name = "DIR",
+            help = "Confine each caller's manifest paths to DIR/<caller directory>, repeatable"
+        )]
+        caller_roots: Vec<PathBuf>,
     },
     /// Generate documentation from manifest
     Docs {
@@ -72,7 +78,7 @@ async fn main() {
         Command::Validate { manifest } => cmd_validate(&manifest),
         Command::Graph { manifest } => cmd_graph(&manifest),
         Command::Init { name } => cmd_init(&name),
-        Command::Serve { bind } => cmd_serve(&bind).await,
+        Command::Serve { bind, caller_roots } => cmd_serve(&bind, &caller_roots).await,
         Command::Docs {
             manifest,
             format,
@@ -202,12 +208,14 @@ path = "output/result.geojson"
     println!("Initialized new geodukt project in {name}/");
 }
 
-async fn cmd_serve(bind: &str) {
+async fn cmd_serve(bind: &str, caller_roots: &[PathBuf]) {
     println!("Starting geodukt server on {bind}");
-    geodukt_server::serve(bind).await.unwrap_or_else(|e| {
-        eprintln!("Server error: {e}");
-        std::process::exit(1);
-    });
+    geodukt_server::serve(bind, caller_roots)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Server error: {e}");
+            std::process::exit(1);
+        });
 }
 
 fn cmd_docs(path: &PathBuf, format: &str, output: Option<&std::path::Path>) {

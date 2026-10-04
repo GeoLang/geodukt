@@ -274,6 +274,12 @@ pub fn read_geopackage(
             message: format!("no feature table found: {e}"),
         })?
     };
+    require_plain_identifier("layer name", &table_name).map_err(|message| {
+        PipelineError::Source {
+            name: "geopackage".into(),
+            message,
+        }
+    })?;
 
     // Get geometry column name
     let geom_col: String = conn
@@ -370,6 +376,20 @@ fn read_crs(conn: &Connection, table: &str) -> Option<String> {
     (code > 0).then(|| format!("{}:{code}", organization.to_uppercase()))
 }
 
+// table and column names are formatted straight into SQL
+fn require_plain_identifier(identifier_kind: &str, name: &str) -> Result<(), String> {
+    let plain = !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if plain {
+        return Ok(());
+    }
+    Err(format!(
+        "{identifier_kind} '{name}' may only use letters, digits and underscores"
+    ))
+}
+
 fn sink_err(e: impl std::fmt::Display) -> PipelineError {
     PipelineError::Sink {
         name: "geopackage".into(),
@@ -452,6 +472,22 @@ pub fn write_geopackage(
     fc: &FeatureCollection,
     table: &str,
 ) -> Result<(), PipelineError> {
+    // Attribute columns come from every feature, so a collection whose
+    // features carry different keys does not lose the extra ones
+    let mut columns: Vec<String> = fc
+        .features
+        .iter()
+        .flat_map(|f| f.properties.keys().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    columns.retain(|c| c != "fid" && c != "geom");
+
+    require_plain_identifier("layer name", table).map_err(sink_err)?;
+    for column in &columns {
+        require_plain_identifier("property key", column).map_err(sink_err)?;
+    }
+
     crate::formats::create_parent_dir(path).map_err(sink_err)?;
     let conn = Connection::open(path).map_err(|e| sink_err(format!("failed to open: {e}")))?;
     let srs = srs_id(fc.crs.as_deref());
@@ -504,17 +540,6 @@ pub fn write_geopackage(
         rusqlite::params![format!("EPSG:{srs}"), srs, crs_wkt(srs)],
     )
     .map_err(sink_err)?;
-
-    // Attribute columns come from every feature, so a collection whose
-    // features carry different keys does not lose the extra ones
-    let mut columns: Vec<String> = fc
-        .features
-        .iter()
-        .flat_map(|f| f.properties.keys().cloned())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    columns.retain(|c| c != "fid" && c != "geom");
 
     let col_defs: String = columns
         .iter()

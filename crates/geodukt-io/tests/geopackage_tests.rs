@@ -271,3 +271,73 @@ fn test_geopackage_wkb_roundtrips_every_geometry_type() {
         );
     }
 }
+
+fn one_point_with(key: &str) -> FeatureCollection {
+    FeatureCollection::new(
+        vec![Feature {
+            geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
+            properties: HashMap::from([(key.to_string(), Value::Integer(1))]),
+        }],
+        None,
+    )
+}
+
+#[test]
+fn test_geopackage_write_refuses_a_layer_name_that_needs_quoting() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.gpkg");
+
+    let error = write_geopackage(
+        &path,
+        &one_point_with("id"),
+        "x\"; DROP TABLE gpkg_contents; --",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("layer name"), "{error}");
+    assert!(
+        !path.exists(),
+        "the file was opened before the name was checked"
+    );
+}
+
+#[test]
+fn test_geopackage_write_refuses_a_property_key_that_needs_quoting() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.gpkg");
+
+    for key in [
+        "a\" TEXT); DROP TABLE x; --",
+        "addr:street",
+        "two words",
+        "",
+    ] {
+        let error = write_geopackage(&path, &one_point_with(key), "layer")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("property key"), "{key}: {error}");
+        assert!(
+            !path.exists(),
+            "{key}: the file was opened before the key was checked"
+        );
+    }
+}
+
+#[test]
+fn test_geopackage_read_refuses_a_layer_name_that_needs_quoting() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("in.gpkg");
+    write_geopackage(&path, &one_point_with("id"), "layer").unwrap();
+
+    let error = read_geopackage(&path, Some("layer'); DROP TABLE layer; --"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("layer name"), "{error}");
+    assert_eq!(
+        read_geopackage(&path, Some("layer"))
+            .unwrap()
+            .features
+            .len(),
+        1
+    );
+}

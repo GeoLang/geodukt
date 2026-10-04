@@ -111,6 +111,12 @@ GeoPackage sources and sinks take an optional `layer` naming the table. A source
 without one reads the first feature table in the file. A sink without one writes
 to `features`.
 
+A layer name, and every property key a GeoPackage sink writes, may only use
+`A-Z`, `a-z`, `0-9` and `_`. Anything else fails the step before any SQL runs,
+so a key such as `addr:street` has to be renamed with `schema_map` first. A
+source without `layer` fails the same way when the file's first feature table
+has such a name.
+
 ```toml
 [[source]]
 name = "parcels"
@@ -265,6 +271,8 @@ carries the caller's `sub`.
 | ran to completion | 200 | run record, `status` is `"Completed"` |
 | ran and failed | 422 | run record, `status` is `{"Failed": "<reason>"}` |
 | invalid TOML, or a graph error | 400 | plain text, nothing recorded |
+| a path outside the caller's directory, see [Caller directories](#caller-directories) | 403 | plain text naming the step, nothing recorded |
+| caller directories configured and no verified caller | 401 | plain text, nothing recorded |
 | a missing required parameter | 422 | `{"kind": "operation", ...}` as from `/validate`, nothing recorded |
 | the record could not be stored | 500 | plain text |
 
@@ -298,6 +306,29 @@ ids exist.
 `/health`, `/operations` and `/validate` stay open, so a planner or an eval
 harness can call them without a token. With the secret unset nothing is checked
 and every caller sees every run.
+
+### Caller directories
+
+```bash
+geodukt serve --bind 0.0.0.0:8100 --caller-root outputs --caller-root user_data
+```
+
+`--caller-root <DIR>` is repeatable. With at least one given, `/run` only
+accepts a source or sink `path` that resolves inside `<DIR>/<caller directory>`
+for one of the roots. A relative path resolves against the server's working
+directory. The path is canonicalized, so `..`, an absolute path elsewhere, and a
+symlink pointing out are all refused with 403 before anything is read or
+written. A sink that does not exist yet is checked through its nearest existing
+parent. A request with no verified caller is refused with 401, so the flag needs
+`PLATFORM_JWT_SECRET` set. Every root must exist when the server starts.
+
+The caller directory is the token's `sub` with every character outside
+`A-Za-z0-9_-` replaced by `_`, cut to 64 characters, then `-` and the first 32
+hex characters of the SHA-256 of the raw `sub`. geolang names its per-user
+directories the same way.
+
+`/validate` and the `/gp` tools open no files and are not checked. Without
+`--caller-root` paths are used as given.
 
 ### GET /runs and GET /runs/{id}
 

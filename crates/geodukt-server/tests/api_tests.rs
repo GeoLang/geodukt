@@ -3,6 +3,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use geodukt_server::auth::AuthConfig;
+use geodukt_server::caller_roots::CallerRoots;
 use geodukt_server::{
     RunRecord, RunStatus, RunStore, StepStatus, create_router, create_router_with_store,
 };
@@ -913,6 +914,7 @@ async fn test_runs_outlive_the_router_that_recorded_them() {
         create_router_with_store(
             AuthConfig::new(None),
             RunStore::open(Some(&database)).unwrap(),
+            CallerRoots::default(),
         )
     };
 
