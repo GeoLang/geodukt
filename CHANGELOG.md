@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 2026-10-19: reading a shapefile whose `.shx` or `.dbf` is missing fails with
   a message naming the missing file. The sidecar extension follows the case of
   the `.shp`, so `FOO.SHP` reads `FOO.SHX` and `FOO.DBF`.
+- 2026-10-19: the GeoPackage reader refuses a file whose geometry or attribute
+  column name holds a double quote or a NUL, naming the column, where the
+  query used to fail. The writer refuses two property keys that differ only by
+  case, such as `Name` and `name`, naming both, since SQLite column names
+  ignore ASCII case.
 
 ### Changed
 - 2026-09-16: the README and the docs page no longer call geodukt "dbt for

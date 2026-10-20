@@ -274,12 +274,15 @@ pub fn read_geopackage(
             message: format!("no feature table found: {e}"),
         })?
     };
-    require_double_quotable_identifier("layer name", &table_name).map_err(|message| {
-        PipelineError::Source {
-            name: "geopackage".into(),
-            message,
-        }
-    })?;
+    let require_quotable = |identifier_kind: &str, name: &str| {
+        require_double_quotable_identifier(identifier_kind, name).map_err(|message| {
+            PipelineError::Source {
+                name: "geopackage".into(),
+                message,
+            }
+        })
+    };
+    require_quotable("layer name", &table_name)?;
 
     // Get geometry column name
     let geom_col: String = conn
@@ -307,6 +310,11 @@ pub fn read_geopackage(
         .filter_map(|r| r.ok())
         .filter(|c| c != &geom_col && c != "fid")
         .collect();
+
+    require_quotable("geometry column", &geom_col)?;
+    for column in &columns {
+        require_quotable("column", column)?;
+    }
 
     let col_list: String = columns.iter().map(|c| format!(", \"{c}\"")).collect();
     let query = format!("SELECT \"{geom_col}\"{col_list} FROM \"{table_name}\"");
@@ -490,6 +498,15 @@ pub fn write_geopackage(
     require_double_quotable_identifier("layer name", table).map_err(sink_err)?;
     for column in &columns {
         require_double_quotable_identifier("property key", column).map_err(sink_err)?;
+    }
+    // sqlite compares column names with ascii case folding
+    let mut keys_by_folded_name: HashMap<String, &String> = HashMap::new();
+    for column in &columns {
+        if let Some(other) = keys_by_folded_name.insert(column.to_ascii_lowercase(), column) {
+            return Err(sink_err(format!(
+                "property keys '{other}' and '{column}' differ only by case, which a GeoPackage column name ignores, rename one"
+            )));
+        }
     }
 
     crate::formats::create_parent_dir(path).map_err(sink_err)?;

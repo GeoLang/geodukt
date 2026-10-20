@@ -388,3 +388,55 @@ fn test_geopackage_read_refuses_a_layer_name_with_a_double_quote() {
         1
     );
 }
+
+#[test]
+fn test_geopackage_read_refuses_a_column_name_with_a_double_quote() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("foreign.gpkg");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE gpkg_contents (table_name TEXT PRIMARY KEY, data_type TEXT, srs_id INTEGER);
+         CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT);
+         INSERT INTO gpkg_contents VALUES ('pois', 'features', 4326);
+         INSERT INTO gpkg_geometry_columns VALUES ('pois', 'geom');
+         CREATE TABLE pois (fid INTEGER PRIMARY KEY, geom BLOB, \"bad\"\"name\" TEXT);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = read_geopackage(&path, None).unwrap_err().to_string();
+    assert!(
+        error.contains("column 'bad\"name' cannot contain a double quote"),
+        "{error}"
+    );
+}
+
+#[test]
+fn test_geopackage_write_refuses_keys_that_differ_only_by_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("case.gpkg");
+    let fc = FeatureCollection::new(
+        vec![Feature {
+            geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
+            properties: HashMap::from([
+                ("Name".to_string(), Value::String("a".into())),
+                ("name".to_string(), Value::String("b".into())),
+            ]),
+        }],
+        None,
+    );
+
+    let error = write_geopackage(&path, &fc, "layer")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("'Name'")
+            && error.contains("'name'")
+            && error.contains("differ only by case"),
+        "{error}"
+    );
+    assert!(
+        !path.exists(),
+        "the file was opened before the keys were checked"
+    );
+}
