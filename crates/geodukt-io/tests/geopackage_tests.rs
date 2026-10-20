@@ -283,7 +283,32 @@ fn one_point_with(key: &str) -> FeatureCollection {
 }
 
 #[test]
-fn test_geopackage_write_refuses_a_layer_name_that_needs_quoting() {
+fn test_geopackage_roundtrips_a_layer_name_and_key_with_punctuation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("osm.gpkg");
+
+    let fc = FeatureCollection::new(
+        vec![Feature {
+            geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
+            properties: HashMap::from([(
+                "addr:street".to_string(),
+                Value::String("Main Street".into()),
+            )]),
+        }],
+        None,
+    );
+    write_geopackage(&path, &fc, "osm-pois 2026").unwrap();
+
+    let back = read_geopackage(&path, Some("osm-pois 2026")).unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(
+        back.features[0].properties.get("addr:street"),
+        Some(&Value::String("Main Street".into()))
+    );
+}
+
+#[test]
+fn test_geopackage_write_refuses_a_layer_name_with_a_double_quote() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.gpkg");
 
@@ -294,7 +319,10 @@ fn test_geopackage_write_refuses_a_layer_name_that_needs_quoting() {
     )
     .unwrap_err()
     .to_string();
-    assert!(error.contains("layer name"), "{error}");
+    assert!(
+        error.contains("layer name") && error.contains("cannot contain a double quote"),
+        "{error}"
+    );
     assert!(
         !path.exists(),
         "the file was opened before the name was checked"
@@ -302,37 +330,56 @@ fn test_geopackage_write_refuses_a_layer_name_that_needs_quoting() {
 }
 
 #[test]
-fn test_geopackage_write_refuses_a_property_key_that_needs_quoting() {
+fn test_geopackage_refuses_an_empty_layer_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("empty.gpkg");
+
+    let write_error = write_geopackage(&path, &one_point_with("id"), "")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        write_error.contains("layer name cannot be empty"),
+        "{write_error}"
+    );
+
+    write_geopackage(&path, &one_point_with("id"), "layer").unwrap();
+    let read_error = read_geopackage(&path, Some("")).unwrap_err().to_string();
+    assert!(
+        read_error.contains("layer name cannot be empty"),
+        "{read_error}"
+    );
+}
+
+#[test]
+fn test_geopackage_write_refuses_a_property_key_that_cannot_be_quoted() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.gpkg");
 
-    for key in [
-        "a\" TEXT); DROP TABLE x; --",
-        "addr:street",
-        "two words",
-        "",
-    ] {
+    for key in ["a\" TEXT); DROP TABLE x; --", "nul\0key", ""] {
         let error = write_geopackage(&path, &one_point_with(key), "layer")
             .unwrap_err()
             .to_string();
-        assert!(error.contains("property key"), "{key}: {error}");
+        assert!(error.contains("property key"), "{key:?}: {error}");
         assert!(
             !path.exists(),
-            "{key}: the file was opened before the key was checked"
+            "{key:?}: the file was opened before the key was checked"
         );
     }
 }
 
 #[test]
-fn test_geopackage_read_refuses_a_layer_name_that_needs_quoting() {
+fn test_geopackage_read_refuses_a_layer_name_with_a_double_quote() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("in.gpkg");
     write_geopackage(&path, &one_point_with("id"), "layer").unwrap();
 
-    let error = read_geopackage(&path, Some("layer'); DROP TABLE layer; --"))
+    let error = read_geopackage(&path, Some("layer\"; DROP TABLE layer; --"))
         .unwrap_err()
         .to_string();
-    assert!(error.contains("layer name"), "{error}");
+    assert!(
+        error.contains("layer name") && error.contains("cannot contain a double quote"),
+        "{error}"
+    );
     assert_eq!(
         read_geopackage(&path, Some("layer"))
             .unwrap()

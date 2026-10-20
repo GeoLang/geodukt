@@ -111,9 +111,9 @@ GeoPackage sources and sinks take an optional `layer` naming the table. A source
 without one reads the first feature table in the file. A sink without one writes
 to `features`.
 
-A layer name, and every property key a GeoPackage sink writes, may only use
-`A-Z`, `a-z`, `0-9` and `_`. Anything else fails the step before any SQL runs,
-so a key such as `addr:street` has to be renamed with `schema_map` first. A
+A layer name, and every property key a GeoPackage sink writes, can hold any
+character except a double quote and a NUL, and cannot be empty. Such a name
+fails the step before any SQL runs, so rename it with `schema_map` first. A
 source without `layer` fails the same way when the file's first feature table
 has such a name.
 

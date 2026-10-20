@@ -6,7 +6,9 @@
 //! instead of producing a file other tools would read differently.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::{Path, PathBuf};
 
 use geodukt_core::feature::{Feature, FeatureCollection, Properties, Value};
 use geodukt_core::geometry::{
@@ -16,20 +18,52 @@ use geodukt_core::pipeline::PipelineError;
 use shapefile::dbase::{FieldName, FieldValue, Record, TableWriterBuilder};
 use shapefile::record::EsriShape;
 
+fn source_err(message: impl Into<String>) -> PipelineError {
+    PipelineError::Source {
+        name: "shapefile".into(),
+        message: message.into(),
+    }
+}
+
+fn open_buffered(path: &Path) -> Result<BufReader<File>, PipelineError> {
+    File::open(path)
+        .map(BufReader::new)
+        .map_err(|e| source_err(format!("failed to open {}: {e}", path.display())))
+}
+
+fn required_sidecar(shp_path: &Path, lowercase_extension: &str) -> Result<PathBuf, PipelineError> {
+    let extension = if shp_path.extension().and_then(|e| e.to_str()) == Some("SHP") {
+        lowercase_extension.to_ascii_uppercase()
+    } else {
+        lowercase_extension.to_string()
+    };
+    let sidecar = shp_path.with_extension(extension);
+    if sidecar.exists() {
+        return Ok(sidecar);
+    }
+    Err(source_err(format!(
+        "{} is missing, a shapefile needs its .shx and .dbf files next to the .shp",
+        sidecar.display()
+    )))
+}
+
 /// Read features from a Shapefile.
 pub fn read_shapefile(path: &Path) -> Result<FeatureCollection, PipelineError> {
-    let mut reader = shapefile::Reader::from_path(path).map_err(|e| PipelineError::Source {
-        name: "shapefile".into(),
-        message: format!("failed to open: {e}"),
-    })?;
+    let shx_path = required_sidecar(path, "shx")?;
+    let dbf_path = required_sidecar(path, "dbf")?;
+
+    // opened by hand because shapefile::Reader::from_path only looks for lowercase sidecars
+    let shape_reader =
+        shapefile::ShapeReader::with_shx(open_buffered(path)?, open_buffered(&shx_path)?)
+            .map_err(|e| source_err(format!("failed to open {}: {e}", path.display())))?;
+    let dbase_reader = shapefile::dbase::Reader::new(open_buffered(&dbf_path)?)
+        .map_err(|e| source_err(format!("failed to open {}: {e}", dbf_path.display())))?;
+    let mut reader = shapefile::Reader::new(shape_reader, dbase_reader);
 
     let mut features = Vec::new();
 
     for result in reader.iter_shapes_and_records() {
-        let (shape, record) = result.map_err(|e| PipelineError::Source {
-            name: "shapefile".into(),
-            message: e.to_string(),
-        })?;
+        let (shape, record) = result.map_err(|e| source_err(e.to_string()))?;
 
         let geometry = shape_to_geometry(&shape);
         let mut properties = HashMap::new();
@@ -757,6 +791,40 @@ mod tests {
             back.features[1].properties.get("mixed"),
             Some(&Value::String("3".into()))
         );
+    }
+
+    #[test]
+    fn test_read_names_the_missing_dbf() {
+        let fc = FeatureCollection::new(
+            vec![feature(point(0.0, 0.0), &[("id", Value::Integer(1))])],
+            None,
+        );
+        let (_dir, path) = write_to_temp(&fc);
+        std::fs::remove_file(path.with_extension("dbf")).unwrap();
+
+        let error = read_shapefile(&path).unwrap_err();
+        assert!(matches!(error, PipelineError::Source { .. }), "{error}");
+        assert!(error.to_string().contains("out.dbf is missing"), "{error}");
+    }
+
+    #[test]
+    fn test_uppercase_shp_reads_uppercase_sidecars() {
+        let fc = FeatureCollection::new(
+            vec![feature(point(1.0, 2.0), &[("id", Value::Integer(1))])],
+            None,
+        );
+        let (dir, path) = write_to_temp(&fc);
+        for extension in ["shp", "shx", "dbf"] {
+            std::fs::rename(
+                path.with_extension(extension),
+                dir.path()
+                    .join(format!("OUT.{}", extension.to_ascii_uppercase())),
+            )
+            .unwrap();
+        }
+
+        let back = read_shapefile(&dir.path().join("OUT.SHP")).unwrap();
+        assert_eq!(back.len(), 1);
     }
 
     #[test]

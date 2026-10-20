@@ -274,7 +274,7 @@ pub fn read_geopackage(
             message: format!("no feature table found: {e}"),
         })?
     };
-    require_plain_identifier("layer name", &table_name).map_err(|message| {
+    require_double_quotable_identifier("layer name", &table_name).map_err(|message| {
         PipelineError::Source {
             name: "geopackage".into(),
             message,
@@ -292,7 +292,7 @@ pub fn read_geopackage(
 
     // Get column info
     let mut stmt = conn
-        .prepare(&format!("PRAGMA table_info('{table_name}')"))
+        .prepare(&format!("PRAGMA table_info(\"{table_name}\")"))
         .map_err(|e| PipelineError::Source {
             name: "geopackage".into(),
             message: e.to_string(),
@@ -376,18 +376,22 @@ fn read_crs(conn: &Connection, table: &str) -> Option<String> {
     (code > 0).then(|| format!("{}:{code}", organization.to_uppercase()))
 }
 
-// table and column names are formatted straight into SQL
-fn require_plain_identifier(identifier_kind: &str, name: &str) -> Result<(), String> {
-    let plain = !name.is_empty()
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
-    if plain {
-        return Ok(());
+// table and column names are formatted into SQL inside double quotes
+fn require_double_quotable_identifier(identifier_kind: &str, name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err(format!("{identifier_kind} cannot be empty"));
     }
-    Err(format!(
-        "{identifier_kind} '{name}' may only use letters, digits and underscores"
-    ))
+    if name.contains('"') {
+        return Err(format!(
+            "{identifier_kind} '{name}' cannot contain a double quote, rename it"
+        ));
+    }
+    if name.contains('\0') {
+        return Err(format!(
+            "{identifier_kind} {name:?} cannot contain a NUL character, rename it"
+        ));
+    }
+    Ok(())
 }
 
 fn sink_err(e: impl std::fmt::Display) -> PipelineError {
@@ -483,9 +487,9 @@ pub fn write_geopackage(
         .collect();
     columns.retain(|c| c != "fid" && c != "geom");
 
-    require_plain_identifier("layer name", table).map_err(sink_err)?;
+    require_double_quotable_identifier("layer name", table).map_err(sink_err)?;
     for column in &columns {
-        require_plain_identifier("property key", column).map_err(sink_err)?;
+        require_double_quotable_identifier("property key", column).map_err(sink_err)?;
     }
 
     crate::formats::create_parent_dir(path).map_err(sink_err)?;

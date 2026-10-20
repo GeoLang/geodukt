@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key outside `[A-Za-z0-9_]`. Both were formatted into SQL, and the writer ran
   them with `execute_batch`, so a manifest could run any SQL, `ATTACH` included.
 
+### Fixed
+- 2026-10-19: the GeoPackage reader and writer accept any layer name or
+  property key except an empty one or one holding a double quote or a NUL, so
+  OSM keys like `addr:street` and a layer named `osm-pois 2026` now work. Every
+  name goes into SQL inside double quotes, `PRAGMA table_info` included.
+- 2026-10-19: reading a shapefile whose `.shx` or `.dbf` is missing fails with
+  a message naming the missing file. The sidecar extension follows the case of
+  the `.shp`, so `FOO.SHP` reads `FOO.SHX` and `FOO.DBF`.
+
 ### Changed
 - 2026-09-16: the README and the docs page no longer call geodukt "dbt for
   spatial data". It runs ten spatial transforms over four formats from a TOML
