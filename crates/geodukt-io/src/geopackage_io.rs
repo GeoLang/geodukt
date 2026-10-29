@@ -4,44 +4,20 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use geodukt_core::feature::{Feature, FeatureCollection, Value};
-use geodukt_core::geometry::{
-    Coord, FeatureGeometry, LineString, MultiLineString, MultiPoint, MultiPolygon, Point, Polygon,
-    Ring,
-};
+use geodukt_core::geometry::{Coord, FeatureGeometry, Point, Polygon};
 use geodukt_core::pipeline::PipelineError;
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
 
-/// Parse GeoPackage binary geometry (GP header + WKB).
+/// Parse GeoPackage binary geometry (GP header + WKB), or raw WKB without the
+/// `GP` magic.
 fn parse_gpkg_geometry(data: &[u8]) -> FeatureGeometry {
-    // GeoPackage binary format:
-    // bytes 0-1: magic "GP"
-    // byte 2: version
-    // byte 3: flags (bits 1-3 = envelope type, bit 0 = byte order of header)
-    // bytes 4-7: srs_id (int32)
-    // then envelope (variable size based on flags), then WKB
-    if data.len() < 8 || data[0] != b'G' || data[1] != b'P' {
-        // Try as raw WKB
-        return parse_wkb(data).unwrap_or_else(origin);
-    }
-
-    let flags = data[3];
-    let envelope_type = (flags >> 1) & 0x07;
-    let envelope_size = match envelope_type {
-        0 => 0,
-        1 => 32, // minx, maxx, miny, maxy
-        2 => 48, // + minz, maxz
-        3 => 48, // + minm, maxm
-        4 => 64, // + minz, maxz, minm, maxm
-        _ => 0,
+    let geometry = if data.len() < 8 || data[0] != b'G' || data[1] != b'P' {
+        topoi_core::read_wkb(data)
+    } else {
+        topoi_core::read_geopackage_geometry(data)
     };
-
-    let wkb_offset = 8 + envelope_size;
-    if wkb_offset >= data.len() {
-        return origin();
-    }
-
-    parse_wkb(&data[wkb_offset..]).unwrap_or_else(origin)
+    geometry.unwrap_or_else(|_| origin())
 }
 
 /// What an unreadable blob decodes to, so one bad row does not fail the read.
@@ -49,132 +25,8 @@ fn origin() -> FeatureGeometry {
     FeatureGeometry::Point(Point::new(0.0, 0.0))
 }
 
-fn parse_wkb(data: &[u8]) -> Option<FeatureGeometry> {
-    Wkb::new(data).geometry()
-}
-
-/// Cursor over a WKB byte string. Every nested geometry carries its own byte
-/// order byte, so the position and the endianness travel together.
-struct Wkb<'a> {
-    data: &'a [u8],
-    pos: usize,
-    le: bool,
-}
-
-impl<'a> Wkb<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self {
-            data,
-            pos: 0,
-            le: true,
-        }
-    }
-
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let end = self.pos.checked_add(n)?;
-        let slice = self.data.get(self.pos..end)?;
-        self.pos = end;
-        Some(slice)
-    }
-
-    fn byte(&mut self) -> Option<u8> {
-        self.take(1).map(|b| b[0])
-    }
-
-    fn count(&mut self) -> Option<u32> {
-        let bytes: [u8; 4] = self.take(4)?.try_into().ok()?;
-        Some(if self.le {
-            u32::from_le_bytes(bytes)
-        } else {
-            u32::from_be_bytes(bytes)
-        })
-    }
-
-    fn number(&mut self) -> Option<f64> {
-        let bytes: [u8; 8] = self.take(8)?.try_into().ok()?;
-        Some(if self.le {
-            f64::from_le_bytes(bytes)
-        } else {
-            f64::from_be_bytes(bytes)
-        })
-    }
-
-    fn coord(&mut self) -> Option<Coord> {
-        Some(Coord::new(self.number()?, self.number()?))
-    }
-
-    fn coords(&mut self) -> Option<Vec<Coord>> {
-        let n = self.count()? as usize;
-        (0..n).map(|_| self.coord()).collect()
-    }
-
-    fn polygon(&mut self) -> Option<Polygon> {
-        let num_rings = self.count()? as usize;
-        let mut rings: Vec<Ring> = Vec::with_capacity(num_rings);
-        for _ in 0..num_rings {
-            rings.push(Ring::new(self.coords()?));
-        }
-        if rings.is_empty() {
-            return None;
-        }
-        Some(Polygon::new(rings.remove(0), rings))
-    }
-
-    fn members(&mut self) -> Option<Vec<FeatureGeometry>> {
-        let n = self.count()? as usize;
-        (0..n).map(|_| self.geometry()).collect()
-    }
-
-    /// One geometry, byte order and type header included.
-    fn geometry(&mut self) -> Option<FeatureGeometry> {
-        self.le = self.byte()? == 1;
-        match self.count()? & 0xFF {
-            1 => Some(FeatureGeometry::Point(Point(self.coord()?))),
-            2 => Some(FeatureGeometry::LineString(LineString::new(self.coords()?))),
-            3 => Some(FeatureGeometry::Polygon(self.polygon()?)),
-            4 => {
-                let points = self
-                    .members()?
-                    .into_iter()
-                    .map(|g| match g {
-                        FeatureGeometry::Point(p) => Some(p),
-                        _ => None,
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                Some(FeatureGeometry::MultiPoint(MultiPoint::new(points)))
-            }
-            5 => {
-                let lines = self
-                    .members()?
-                    .into_iter()
-                    .map(|g| match g {
-                        FeatureGeometry::LineString(ls) => Some(ls),
-                        _ => None,
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                Some(FeatureGeometry::MultiLineString(MultiLineString::new(
-                    lines,
-                )))
-            }
-            6 => {
-                let polygons = self
-                    .members()?
-                    .into_iter()
-                    .map(|g| match g {
-                        FeatureGeometry::Polygon(p) => Some(p),
-                        _ => None,
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                Some(FeatureGeometry::MultiPolygon(MultiPolygon::new(polygons)))
-            }
-            7 => Some(FeatureGeometry::GeometryCollection(self.members()?)),
-            _ => None,
-        }
-    }
-}
-
-/// A GeoPackage geometry blob: the GP header [`parse_gpkg_geometry`] documents,
-/// with no envelope, followed by little-endian WKB.
+/// A GeoPackage geometry blob: the GP header with no envelope, followed by
+/// little-endian WKB.
 fn gpkg_blob(geom: &FeatureGeometry, srs: i32) -> Vec<u8> {
     let mut out = vec![b'G', b'P', 0, 0b0000_0001];
     out.extend_from_slice(&srs.to_le_bytes());

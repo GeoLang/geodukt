@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ignore ASCII case.
 
 ### Changed
+- 2026-10-28: the GeoPackage reader decodes geometry with topoi's
+  `read_geopackage_geometry`. A blob flagged empty reads as an empty geometry
+  collection, and an invalid envelope type reads as the origin point.
 - 2026-09-16: the README and the docs page no longer call geodukt "dbt for
   spatial data". It runs ten spatial transforms over four formats from a TOML
   manifest, which the taglines now say instead.
