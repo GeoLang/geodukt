@@ -412,6 +412,60 @@ fn test_geopackage_read_refuses_a_column_name_with_a_double_quote() {
 }
 
 #[test]
+fn test_geopackage_write_drops_keys_naming_the_reserved_columns_in_any_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reserved.gpkg");
+    let fc = FeatureCollection::new(
+        vec![Feature {
+            geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
+            properties: HashMap::from([
+                ("Fid".to_string(), Value::Integer(9)),
+                ("GEOM".to_string(), Value::String("not a geometry".into())),
+                ("name".to_string(), Value::String("kept".into())),
+            ]),
+        }],
+        None,
+    );
+
+    write_geopackage(&path, &fc, "layer").unwrap();
+
+    let back = read_geopackage(&path, Some("layer")).unwrap();
+    assert!(equals(
+        &back.features[0].geometry,
+        &FeatureGeometry::Point(Point::new(1.0, 2.0))
+    ));
+    assert_eq!(
+        back.features[0].properties,
+        HashMap::from([("name".to_string(), Value::String("kept".into()))])
+    );
+}
+
+#[test]
+fn test_geopackage_read_skips_reserved_columns_declared_in_another_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("foreign.gpkg");
+    write_geopackage(&path, &one_point_with("id"), "pois").unwrap();
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE pois RENAME COLUMN fid TO FID;
+         ALTER TABLE pois RENAME COLUMN geom TO GEOM;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let back = read_geopackage(&path, Some("pois")).unwrap();
+    assert!(equals(
+        &back.features[0].geometry,
+        &FeatureGeometry::Point(Point::new(1.0, 2.0))
+    ));
+    assert_eq!(
+        back.features[0].properties,
+        HashMap::from([("id".to_string(), Value::Integer(1))])
+    );
+}
+
+#[test]
 fn test_geopackage_write_refuses_keys_that_differ_only_by_case() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("case.gpkg");

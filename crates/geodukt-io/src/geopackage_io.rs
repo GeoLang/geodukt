@@ -160,7 +160,7 @@ pub fn read_geopackage(
             message: e.to_string(),
         })?
         .filter_map(|r| r.ok())
-        .filter(|c| c != &geom_col && c != "fid")
+        .filter(|c| !c.eq_ignore_ascii_case(&geom_col) && !c.eq_ignore_ascii_case("fid"))
         .collect();
 
     require_quotable("geometry column", &geom_col)?;
@@ -345,7 +345,7 @@ pub fn write_geopackage(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    columns.retain(|c| c != "fid" && c != "geom");
+    columns.retain(|c| !c.eq_ignore_ascii_case("fid") && !c.eq_ignore_ascii_case("geom"));
 
     require_double_quotable_identifier("layer name", table).map_err(sink_err)?;
     for column in &columns {

@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them with `execute_batch`, so a manifest could run any SQL, `ATTACH` included.
 
 ### Fixed
+- 2026-11-03: the GeoPackage writer drops a property key matching `fid` or
+  `geom` in any case. `Fid` or `GEOM` failed at `CREATE TABLE` with a duplicate
+  column error. The reader also skips the primary key and geometry columns when
+  a file declares them in another case, such as `FID` or `GEOM`.
 - 2026-10-19: the GeoPackage reader and writer accept any layer name or
   property key except an empty one or one holding a double quote or a NUL, so
   OSM keys like `addr:street` and a layer named `osm-pois 2026` now work. Every
