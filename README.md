@@ -117,6 +117,13 @@ fails the step before any SQL runs, so rename it with `schema_map` first. A
 source without `layer` fails the same way when the file's first feature table
 has such a name.
 
+A GeoPackage sink drops a property key that matches `fid` or `geom` in any ASCII
+case, because the sink table already has those two columns, the primary key and
+the geometry. The run still succeeds and the value is not written. Two property
+keys that differ only by ASCII case, such as `Name` and `name`, fail the step,
+because SQLite column names ignore ASCII case. Rename any of these with
+`schema_map` first to keep them.
+
 ```toml
 [[source]]
 name = "parcels"
@@ -141,7 +148,7 @@ path = "output/centroids.shp"
 What each format carries:
 
 - **GeoJSON** holds any geometry type and is assumed to be EPSG:4326.
-- **GeoPackage** round-trips geometry, attribute types (integer, float, text, null), and the CRS as an EPSG code.
+- **GeoPackage** round-trips geometry, attribute types (integer, float, text, null), and the CRS as an EPSG code. A property key matching `fid` or `geom` in any ASCII case is dropped on write, and keys differing only by ASCII case fail the write.
 - **Shapefile** writes the .shp, .shx and .dbf files, plus a .prj when the CRS is a known EPSG code. The format holds one geometry type per file, attribute names up to 10 bytes and field widths up to 254 bytes. A numeric column that holds a fraction is written with 8 decimal places. A collection that breaks any of those limits fails the run instead of being written with data lost.
 - **CSV** carries point geometry only, as a `lon,lat` pair followed by one column per property. Writing anything but a point fails the run. Reads accept `lon`/`longitude`/`x` and `lat`/`latitude`/`y`, and assume EPSG:4326. CSV stores no types, so a read infers one per cell: headers come back lowercased, a string that looks like a number comes back as a number, `true`/`false` come back as strings, and an empty cell comes back as an empty string rather than null.
 
@@ -287,9 +294,13 @@ carries its error, and steps the run never reached are `NotRun`.
 With `PLATFORM_JWT_SECRET` set, `/run` and every `/gp/*` route, `/gp/catalog`
 included, accept either a platform JWT with the `editor` or `admin` role, or a
 role-free tool JWT with `token_use: "tool"` and `scope: ["geodukt:run"]`. A tool
-token never falls back to `role`. An empty or wrong scope array is 403. A
-missing, non-array or non-string scope claim, an unknown `token_use`, or a tool
-token that carries a role is 401.
+token never falls back to `role`. An empty or wrong scope array is 403. A tool
+token with a missing, non-array or non-string scope claim or with a role is 401,
+and so is an unknown `token_use`. A platform JWT with no string `role` is 401 on
+every gated route, and so is any token with an empty `sub`, a `geolang_use` claim,
+an `agora_use` claim, an `aud` claim or a `name` that is a number, boolean, array
+or object. A `token_use`, `geolang_use` or `agora_use` claim of JSON null is 401
+as well.
 
 `/runs` and `/runs/{id}` need a platform JWT of any role:
 
@@ -321,6 +332,10 @@ symlink pointing out are all refused with 403 before anything is read or
 written. A sink that does not exist yet is checked through its nearest existing
 parent. A request with no verified caller is refused with 401, so the flag needs
 `PLATFORM_JWT_SECRET` set. Every root must exist when the server starts.
+
+A shapefile source reads its `.shx` and `.dbf` from beside the resolved `.shp`,
+and a shapefile sink writes its `.shx`, `.dbf` and `.prj` there. A symlink at any
+of them fails the run with 422, and this also applies without `--caller-root`.
 
 The caller directory is the token's `sub` with every character outside
 `A-Za-z0-9_-` replaced by `_`, cut to 64 characters, then `-` and the first 32

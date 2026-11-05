@@ -43,7 +43,7 @@ pub struct RunRequest {
 
 /// Create the server router, reading the platform secret from the environment.
 pub fn create_router() -> Router {
-    create_router_with_auth(AuthConfig::from_env())
+    create_router_with_auth(AuthConfig::from_env().expect("could not read the platform secret"))
 }
 
 /// Create the server router with an explicit auth config, over the run history
@@ -283,7 +283,7 @@ async fn get_run(
 pub async fn serve(bind: &str, caller_roots: &[std::path::PathBuf]) -> std::io::Result<()> {
     let runs = RunStore::from_env().map_err(std::io::Error::other)?;
     let router = create_router_with_store(
-        AuthConfig::from_env(),
+        AuthConfig::from_env()?,
         runs,
         CallerRoots::new(caller_roots)?,
     );

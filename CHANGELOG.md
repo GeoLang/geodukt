@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- 2026-11-05: the shapefile reader refuses a `.shx` or `.dbf` that is a symlink,
+  and the writer refuses a `.shx`, `.dbf` or `.prj` that is one, with or without
+  `--caller-root`. `--caller-root` only checked the `.shp` path, so a symlinked
+  sidecar let a run read or overwrite a file outside the caller's directory.
+- 2026-11-05: a `PLATFORM_JWT_SECRET` that is set but not valid UTF-8 stops
+  `geodukt serve` at startup with an error naming the variable. It used to
+  count as unset, which turned auth off.
 - 2026-10-04: `geodukt serve --caller-root <DIR>`, repeatable. With it set,
   `/run` refuses a source or sink path that does not resolve inside
   `<DIR>/<caller directory>` for the token's `sub`, and refuses a request with
@@ -36,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ignore ASCII case.
 
 ### Changed
+- 2026-11-04: token checks use the shared `platform-auth` crate. A token with an
+  empty `sub`, a `geolang_use` claim, an `agora_use` claim, a `token_use` set to
+  null, a non-string `aud` or a `name` that is a number, boolean, array or object
+  is now 401 on the gated routes. A platform token whose `scope` claim is not an
+  array of strings is no longer refused for that claim, its `role` decides.
+- 2026-11-04: CI and the release workflow call the reusable workflows in
+  `GeoLang/.github`. The `geodukt-<target>.tar.gz` archives and the image tags
+  are unchanged.
 - 2026-10-28: the GeoPackage reader decodes geometry with topoi's
   `read_geopackage_geometry`. A blob flagged empty reads as an empty geometry
   collection, and an invalid envelope type reads as the origin point.

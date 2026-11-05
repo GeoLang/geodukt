@@ -1,10 +1,14 @@
+use std::collections::HashMap;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use geodukt_core::feature::{Feature, FeatureCollection, Value};
+use geodukt_core::geometry::{FeatureGeometry, Point};
+use geodukt_io::shapefile_io::write_shapefile;
 use geodukt_server::RunStore;
-use geodukt_server::auth::{AuthConfig, Claims};
+use geodukt_server::auth::AuthConfig;
 use geodukt_server::caller_roots::{CallerRoots, caller_directory_name};
 use geodukt_server::create_router_with_store;
 use tower::ServiceExt;
@@ -57,13 +61,11 @@ fn token_for(subject: &str) -> String {
         .as_secs();
     jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
-        &Claims {
-            sub: subject.into(),
-            exp: (now + TOKEN_LIFETIME_SECONDS) as usize,
-            role: Some(EDITOR_ROLE.into()),
-            token_use: None,
-            scope: None,
-        },
+        &serde_json::json!({
+            "sub": subject,
+            "exp": now + TOKEN_LIFETIME_SECONDS,
+            "role": EDITOR_ROLE,
+        }),
         &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
     )
     .unwrap()
@@ -230,6 +232,112 @@ async fn a_symlink_pointing_out_of_the_callers_directory_is_refused() {
         assert!(body.starts_with(refused_kind), "{body}");
         assert!(!theirs.join("planted.geojson").exists());
         assert!(!own.join("out.geojson").exists());
+    }
+}
+
+fn write_point_shapefile(path: &Path, name: &str) {
+    let feature = Feature {
+        geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
+        properties: HashMap::from([("name".to_string(), Value::String(name.to_string()))]),
+    };
+    write_shapefile(path, &FeatureCollection::new(vec![feature], None)).unwrap();
+}
+
+fn shapefile_manifest(source: &Path, sink: &Path) -> String {
+    manifest(source, sink).replacen(r#"format = "geojson""#, r#"format = "shapefile""#, 1)
+}
+
+#[tokio::test]
+async fn a_shapefile_with_regular_sidecars_runs() {
+    let volume = Volume::new();
+    let own = volume.directory_of(CALLER);
+    let source = own.join("in.shp");
+    let sink = own.join("out.geojson");
+    write_point_shapefile(&source, "from-own-dbf");
+
+    let (status, body) = run_as(
+        volume.router(AuthConfig::new(Some(SECRET.into()))),
+        Some(CALLER),
+        &shapefile_manifest(&source, &sink),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let written = std::fs::read_to_string(&sink).unwrap();
+    assert!(written.contains("from-own-dbf"), "{written}");
+}
+
+#[tokio::test]
+async fn a_shapefile_sidecar_symlinked_out_of_the_callers_directory_is_refused() {
+    let volume = Volume::new();
+    let own = volume.directory_of(CALLER);
+    let theirs = volume.directory_of(OTHER_CALLER).join("in.shp");
+    write_point_shapefile(&theirs, "from-their-dbf");
+
+    for extension in ["shx", "dbf"] {
+        let source = own.join(format!("linked_{extension}.shp"));
+        let sink = own.join(format!("linked_{extension}.geojson"));
+        write_point_shapefile(&source, "from-own-dbf");
+        let sidecar = source.with_extension(extension);
+        std::fs::remove_file(&sidecar).unwrap();
+        symlink(theirs.with_extension(extension), &sidecar).unwrap();
+
+        let (status, body) = run_as(
+            volume.router(AuthConfig::new(Some(SECRET.into()))),
+            Some(CALLER),
+            &shapefile_manifest(&source, &sink),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body.contains("without following symlinks"), "{body}");
+        assert!(!body.contains("from-their-dbf"), "{body}");
+        assert!(!sink.exists(), "{extension}");
+    }
+}
+
+#[tokio::test]
+async fn a_shapefile_sink_sidecar_symlinked_out_of_the_callers_directory_is_not_written() {
+    const OUTSIDE_CONTENT: &str = "belongs to the other caller";
+    let volume = Volume::new();
+    let own = volume.directory_of(CALLER);
+    let theirs = volume.directory_of(OTHER_CALLER);
+    let source = own.join("named.geojson");
+    std::fs::write(
+        &source,
+        r#"{"type":"FeatureCollection","features":[
+    {"type":"Feature","properties":{"name":"park"},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#,
+    )
+    .unwrap();
+
+    for extension in ["shx", "dbf", "prj"] {
+        let existing_target = theirs.join(format!("existing.{extension}"));
+        let dangling_target = theirs.join(format!("planted.{extension}"));
+        std::fs::write(&existing_target, OUTSIDE_CONTENT).unwrap();
+
+        for (sink_stem, target) in [
+            ("existing", &existing_target),
+            ("dangling", &dangling_target),
+        ] {
+            let sink = own.join(format!("{sink_stem}_{extension}.shp"));
+            symlink(target, sink.with_extension(extension)).unwrap();
+            let sink_manifest = manifest(&source, &sink).replace(
+                "input = \"points\"\nformat = \"geojson\"",
+                "input = \"points\"\nformat = \"shapefile\"",
+            );
+
+            let (status, body) = run_as(
+                volume.router(AuthConfig::new(Some(SECRET.into()))),
+                Some(CALLER),
+                &sink_manifest,
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            assert!(body.contains("without following symlinks"), "{body}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&existing_target).unwrap(),
+            OUTSIDE_CONTENT
+        );
+        assert!(!dangling_target.exists(), "{extension}");
     }
 }
 

@@ -15,61 +15,19 @@
 
 use axum::Json;
 use axum::extract::{FromRequestParts, Request, State};
-use axum::http::{StatusCode, header, request::Parts};
+use axum::http::{StatusCode, request::Parts};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use jsonwebtoken::{DecodingKey, Validation, decode};
-use serde::{Deserialize, Serialize};
+use platform_auth::{TokenAuthority, VerifiedToken, bearer_token, verify_token};
 
 /// Env var holding the shared HS256 secret. Unset means dev mode: no gate.
 pub const SECRET_ENV: &str = "PLATFORM_JWT_SECRET";
-pub const TOOL_TOKEN_USE: &str = "tool";
 pub const GEODUKT_RUN_SCOPE: &str = "geodukt:run";
 
-/// JWT claims.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Claims {
-    pub sub: String,
-    pub exp: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_use: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<Vec<String>>,
-}
-
-impl Claims {
-    fn valid_contract(&self) -> bool {
-        match self.token_use.as_deref() {
-            None => self.role.is_some(),
-            Some(TOOL_TOKEN_USE) => self.role.is_none() && self.scope.is_some(),
-            Some(_) => false,
-        }
-    }
-
-    fn is_tool_token(&self) -> bool {
-        self.token_use.as_deref() == Some(TOOL_TOKEN_USE)
-    }
-
-    fn has_scope(&self, required: &str) -> bool {
-        self.scope
-            .as_ref()
-            .is_some_and(|scopes| scopes.iter().any(|scope| scope == required))
-    }
-
-    /// A user role or the exact scoped operation may start a run.
-    pub fn can_run(&self) -> bool {
-        if self.is_tool_token() {
-            return self.has_scope(GEODUKT_RUN_SCOPE);
-        }
-        matches!(self.role.as_deref(), Some("admin" | "editor"))
-    }
-
-    /// The instance-wide administrator, the role that reads other callers'
-    /// runs. Same string ptolemy, tiletopia and collecta admit.
-    pub fn can_admin(&self) -> bool {
-        !self.is_tool_token() && self.role.as_deref() == Some("admin")
+fn can_run(token: &VerifiedToken) -> bool {
+    match &token.authority {
+        TokenAuthority::Tool { .. } => token.allows_scope(GEODUKT_RUN_SCOPE),
+        TokenAuthority::Platform { role } => matches!(role.as_deref(), Some("admin" | "editor")),
     }
 }
 
@@ -91,8 +49,18 @@ impl std::fmt::Debug for AuthConfig {
 impl AuthConfig {
     /// A missing or empty secret means auth off, matching the other services'
     /// dev mode.
-    pub fn from_env() -> Self {
-        Self::new(std::env::var(SECRET_ENV).ok())
+    pub fn from_env() -> std::io::Result<Self> {
+        let secret = std::env::var_os(SECRET_ENV)
+            .map(|secret| {
+                secret.into_string().map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("{SECRET_ENV} is set but not UTF-8"),
+                    )
+                })
+            })
+            .transpose()?;
+        Ok(Self::new(secret))
     }
 
     pub fn new(secret: Option<String>) -> Self {
@@ -110,30 +78,16 @@ fn deny(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({"error": message}))).into_response()
 }
 
-/// The bearer token's claims, or the status and message to deny with.
-fn verify(request: &Request, secret: &str) -> Result<Claims, (StatusCode, &'static str)> {
-    let token = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .filter(|t| !t.is_empty());
-
-    let Some(token) = token else {
+fn verify(request: &Request, secret: &str) -> Result<VerifiedToken, (StatusCode, &'static str)> {
+    let Some(token) = bearer_token(request.headers()) else {
         return Err((StatusCode::UNAUTHORIZED, "missing bearer token"));
     };
 
-    // the decode error is not echoed back: it separates "expired" from "bad
-    // signature", which helps an attacker more than a caller
-    let key = DecodingKey::from_secret(secret.as_bytes());
-    let Ok(data) = decode::<Claims>(token, &key, &Validation::default()) else {
-        return Err((StatusCode::UNAUTHORIZED, "invalid or expired token"));
-    };
-    if !data.claims.valid_contract() {
-        return Err((StatusCode::UNAUTHORIZED, "invalid or expired token"));
-    }
-
-    Ok(data.claims)
+    // verify_token accepts platform tokens with no role
+    verify_token(token, secret)
+        .ok()
+        .filter(|verified| !matches!(verified.authority, TokenAuthority::Platform { role: None }))
+        .ok_or((StatusCode::UNAUTHORIZED, "invalid or expired token"))
 }
 
 /// Require a valid token with role `editor` or `admin`. Passes everything
@@ -147,19 +101,20 @@ pub async fn require_run_access(
         return next.run(request).await;
     };
 
-    let claims = match verify(&request, secret) {
-        Ok(claims) => claims,
+    let verified = match verify(&request, secret) {
+        Ok(verified) => verified,
         Err((status, message)) => return deny(status, message),
     };
 
-    if !claims.can_run() {
-        if claims.is_tool_token() {
-            return deny(StatusCode::FORBIDDEN, "geodukt:run scope required");
-        }
-        return deny(StatusCode::FORBIDDEN, "editor or admin role required");
+    if !can_run(&verified) {
+        let message = match verified.authority {
+            TokenAuthority::Tool { .. } => "geodukt:run scope required",
+            TokenAuthority::Platform { .. } => "editor or admin role required",
+        };
+        return deny(StatusCode::FORBIDDEN, message);
     }
 
-    request.extensions_mut().insert(claims);
+    request.extensions_mut().insert(verified);
     next.run(request).await
 }
 
@@ -176,27 +131,27 @@ pub async fn require_history_access(
         return next.run(request).await;
     };
 
-    let claims = match verify(&request, secret) {
-        Ok(claims) => claims,
+    let verified = match verify(&request, secret) {
+        Ok(verified) => verified,
         Err((status, message)) => return deny(status, message),
     };
 
-    if claims.is_tool_token() {
+    if matches!(verified.authority, TokenAuthority::Tool { .. }) {
         return deny(StatusCode::FORBIDDEN, "platform user token required");
     }
 
-    request.extensions_mut().insert(claims);
+    request.extensions_mut().insert(verified);
     next.run(request).await
 }
 
 /// The verified caller, absent in dev mode.
 #[derive(Debug, Clone)]
-pub struct Caller(Option<Claims>);
+pub struct Caller(Option<VerifiedToken>);
 
 impl Caller {
     /// Subject to record on the run, or `None` when nothing was verified.
     pub fn sub(&self) -> Option<String> {
-        self.0.as_ref().map(|c| c.sub.clone())
+        self.0.as_ref().map(|verified| verified.sub.clone())
     }
 }
 
@@ -230,11 +185,15 @@ impl AuthConfig {
         if !self.enabled() {
             return Some(RunVisibility::All);
         }
-        let claims = caller.0.as_ref()?;
-        if claims.can_admin() {
+        let verified = caller.0.as_ref()?;
+        let is_admin = matches!(
+            &verified.authority,
+            TokenAuthority::Platform { role } if role.as_deref() == Some("admin")
+        );
+        if is_admin {
             return Some(RunVisibility::All);
         }
-        Some(RunVisibility::Own(claims.sub.clone()))
+        Some(RunVisibility::Own(verified.sub.clone()))
     }
 }
 
@@ -242,7 +201,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Caller {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(Caller(parts.extensions.get::<Claims>().cloned()))
+        Ok(Caller(parts.extensions.get::<VerifiedToken>().cloned()))
     }
 }
 
@@ -250,35 +209,31 @@ impl<S: Send + Sync> FromRequestParts<S> for Caller {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_editor_and_admin_can_run() {
-        let claims = |role: &str| Claims {
+    fn platform_token(role: &str) -> VerifiedToken {
+        VerifiedToken {
             sub: "u1".into(),
             exp: 0,
-            role: Some(role.into()),
-            token_use: None,
-            scope: None,
-        };
-        assert!(claims("admin").can_run());
-        assert!(claims("editor").can_run());
-        assert!(!claims("viewer").can_run());
+            name: None,
+            authority: TokenAuthority::Platform {
+                role: Some(role.into()),
+            },
+        }
+    }
+
+    #[test]
+    fn only_editor_and_admin_can_run() {
+        assert!(can_run(&platform_token("admin")));
+        assert!(can_run(&platform_token("editor")));
+        assert!(!can_run(&platform_token("viewer")));
         // wrong case is not a known role
-        assert!(!claims("Editor").can_run());
-        assert!(!claims("").can_run());
+        assert!(!can_run(&platform_token("Editor")));
+        assert!(!can_run(&platform_token("")));
     }
 
     #[test]
     fn only_admin_reads_other_callers_runs() {
         let config = AuthConfig::new(Some("0123456789abcdef".into()));
-        let visibility = |role: &str| {
-            config.run_visibility(&Caller(Some(Claims {
-                sub: "u1".into(),
-                exp: 0,
-                role: Some(role.into()),
-                token_use: None,
-                scope: None,
-            })))
-        };
+        let visibility = |role: &str| config.run_visibility(&Caller(Some(platform_token(role))));
         assert_eq!(visibility("admin"), Some(RunVisibility::All));
         assert_eq!(
             visibility("editor"),

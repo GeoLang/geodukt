@@ -6,8 +6,8 @@
 //! instead of producing a file other tools would read differently.
 
 use std::collections::{BTreeSet, HashMap};
-use std::fs::File;
-use std::io::BufReader;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use geodukt_core::feature::{Feature, FeatureCollection, Properties, Value};
@@ -31,6 +31,42 @@ fn open_buffered(path: &Path) -> Result<BufReader<File>, PipelineError> {
         .map_err(|e| source_err(format!("failed to open {}: {e}", path.display())))
 }
 
+#[cfg(unix)]
+fn open_without_following_symlinks(
+    options: &mut OpenOptions,
+    path: &Path,
+) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // O_NOFOLLOW fails the open on a symlink, which leaves no gap between a check and the open
+    options.custom_flags(libc::O_NOFOLLOW).open(path)
+}
+
+#[cfg(not(unix))]
+fn open_without_following_symlinks(
+    options: &mut OpenOptions,
+    path: &Path,
+) -> std::io::Result<File> {
+    // windows has no O_NOFOLLOW
+    if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.is_symlink())
+    {
+        return Err(std::io::Error::other("the path is a symbolic link"));
+    }
+    options.open(path)
+}
+
+fn open_sidecar(path: &Path) -> Result<BufReader<File>, PipelineError> {
+    open_without_following_symlinks(OpenOptions::new().read(true), path)
+        .map(BufReader::new)
+        .map_err(|e| {
+            source_err(format!(
+                "failed to open sidecar {} without following symlinks: {e}",
+                path.display()
+            ))
+        })
+}
+
 fn required_sidecar(shp_path: &Path, lowercase_extension: &str) -> Result<PathBuf, PipelineError> {
     let extension = if shp_path.extension().and_then(|e| e.to_str()) == Some("SHP") {
         lowercase_extension.to_ascii_uppercase()
@@ -38,7 +74,8 @@ fn required_sidecar(shp_path: &Path, lowercase_extension: &str) -> Result<PathBu
         lowercase_extension.to_string()
     };
     let sidecar = shp_path.with_extension(extension);
-    if sidecar.exists() {
+    // Path::exists follows symlinks, which reveals whether a path outside the root exists
+    if sidecar.symlink_metadata().is_ok() {
         return Ok(sidecar);
     }
     Err(source_err(format!(
@@ -54,9 +91,9 @@ pub fn read_shapefile(path: &Path) -> Result<FeatureCollection, PipelineError> {
 
     // opened by hand because shapefile::Reader::from_path only looks for lowercase sidecars
     let shape_reader =
-        shapefile::ShapeReader::with_shx(open_buffered(path)?, open_buffered(&shx_path)?)
+        shapefile::ShapeReader::with_shx(open_buffered(path)?, open_sidecar(&shx_path)?)
             .map_err(|e| source_err(format!("failed to open {}: {e}", path.display())))?;
-    let dbase_reader = shapefile::dbase::Reader::new(open_buffered(&dbf_path)?)
+    let dbase_reader = shapefile::dbase::Reader::new(open_sidecar(&dbf_path)?)
         .map_err(|e| source_err(format!("failed to open {}: {e}", dbf_path.display())))?;
     let mut reader = shapefile::Reader::new(shape_reader, dbase_reader);
 
@@ -468,6 +505,19 @@ fn to_record(properties: &Properties, fields: &[FieldSpec]) -> Record {
     record
 }
 
+fn create_sidecar(path: &Path) -> Result<File, PipelineError> {
+    open_without_following_symlinks(
+        OpenOptions::new().write(true).create(true).truncate(true),
+        path,
+    )
+    .map_err(|e| {
+        sink_err(format!(
+            "failed to create sidecar {} without following symlinks: {e}",
+            path.display()
+        ))
+    })
+}
+
 fn write_shapes<S, F>(
     path: &Path,
     builder: TableWriterBuilder,
@@ -479,8 +529,14 @@ where
     S: EsriShape,
     F: Fn(&FeatureGeometry) -> Result<S, PipelineError>,
 {
-    let mut writer = shapefile::Writer::from_path(path, builder)
+    // opened by hand because shapefile::Writer::from_path follows symlinks at the sidecars
+    let shx = BufWriter::new(create_sidecar(&path.with_extension("shx"))?);
+    let dbf = BufWriter::new(create_sidecar(&path.with_extension("dbf"))?);
+    let shp = File::create(path)
+        .map(BufWriter::new)
         .map_err(|e| sink_err(format!("failed to create {}: {e}", path.display())))?;
+    let shape_writer = shapefile::ShapeWriter::with_shx(shp, shx);
+    let mut writer = shapefile::Writer::new(shape_writer, builder.build_with_dest(dbf));
 
     for feature in &fc.features {
         let shape = convert(&feature.geometry)?;
@@ -498,7 +554,7 @@ fn write_prj(path: &Path, crs: Option<&str>) -> Result<(), PipelineError> {
     let Some(wkt) = crs.and_then(epsg_code).and_then(crs_definitions::from_code) else {
         return Ok(());
     };
-    std::fs::write(path.with_extension("prj"), wkt.wkt)?;
+    create_sidecar(&path.with_extension("prj"))?.write_all(wkt.wkt.as_bytes())?;
     Ok(())
 }
 
@@ -805,6 +861,30 @@ mod tests {
         let error = read_shapefile(&path).unwrap_err();
         assert!(matches!(error, PipelineError::Source { .. }), "{error}");
         assert!(error.to_string().contains("out.dbf is missing"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_read_refuses_a_symlinked_sidecar_with_or_without_a_target() {
+        let fc = FeatureCollection::new(
+            vec![feature(point(0.0, 0.0), &[("id", Value::Integer(1))])],
+            None,
+        );
+        let (dir, path) = write_to_temp(&fc);
+        let dbf = path.with_extension("dbf");
+        let moved_dbf = dir.path().join("moved.dbf");
+        std::fs::rename(&dbf, &moved_dbf).unwrap();
+
+        for target in [moved_dbf, dir.path().join("absent.dbf")] {
+            std::os::unix::fs::symlink(&target, &dbf).unwrap();
+            let error = read_shapefile(&path).unwrap_err();
+            assert!(
+                error.to_string().contains("without following symlinks"),
+                "{}: {error}",
+                target.display()
+            );
+            std::fs::remove_file(&dbf).unwrap();
+        }
     }
 
     #[test]

@@ -2,29 +2,18 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use geodukt_server::auth::{AuthConfig, Claims};
+use geodukt_server::auth::AuthConfig;
 use geodukt_server::{create_router, create_router_with_auth};
 use tower::ServiceExt;
 
 const SECRET: &str = "0123456789abcdef0123456789abcdef";
 
 fn token_for(sub: &str, role: &str, ttl_secs: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-    jsonwebtoken::encode(
-        &jsonwebtoken::Header::default(),
-        &Claims {
-            sub: sub.into(),
-            exp: (now + ttl_secs) as usize,
-            role: Some(role.into()),
-            token_use: None,
-            scope: None,
-        },
-        &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
-    )
-    .unwrap()
+    claims_token(serde_json::json!({
+        "sub": sub,
+        "exp": expiry(ttl_secs),
+        "role": role,
+    }))
 }
 
 fn token(role: &str, ttl_secs: i64) -> String {
@@ -289,6 +278,25 @@ async fn malformed_tool_claims_are_unauthorized() {
 }
 
 #[tokio::test]
+async fn platform_token_without_a_string_role_is_unauthorized() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = working_manifest(dir.path());
+    let without_role = serde_json::json!({"sub": "user-42", "exp": expiry(60)});
+    let number_role = serde_json::json!({"sub": "user-42", "exp": expiry(60), "role": 7});
+
+    for claims in [without_role, number_role] {
+        let bearer = claims_token(claims);
+        let (status, body) = send(gated(), run_request(&manifest, Some(&bearer))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid or expired token");
+
+        let (status, _) = send(gated(), get_request("/runs", Some(&bearer))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    assert!(!dir.path().join("out.geojson").exists());
+}
+
+#[tokio::test]
 async fn missing_token_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = working_manifest(dir.path());
@@ -326,13 +334,11 @@ async fn token_signed_with_another_secret_is_rejected() {
     let manifest = working_manifest(dir.path());
     let foreign = jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
-        &Claims {
-            sub: "user-42".into(),
-            exp: usize::MAX,
-            role: Some("admin".into()),
-            token_use: None,
-            scope: None,
-        },
+        &serde_json::json!({
+            "sub": "user-42",
+            "exp": usize::MAX,
+            "role": "admin",
+        }),
         &jsonwebtoken::EncodingKey::from_secret(b"a-completely-different-secret-val"),
     )
     .unwrap();
