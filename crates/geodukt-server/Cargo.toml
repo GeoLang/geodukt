@@ -16,7 +16,7 @@ serde_json = "1"
 topoi-core = { git = "https://github.com/GeoLang/topoi.git", branch = "master" }
 toml = "1.1"
 platform-auth = { git = "https://github.com/GeoLang/platform-crates.git", branch = "master" }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 chrono = "0.4"
 
 [dev-dependencies]
