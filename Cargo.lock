@@ -371,6 +371,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d18c61d944a9f854f35279f9a5d75ab562fb076dab3f49e53d6f0edbff4f44ea"
 
 [[package]]
+name = "crs-definitions"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed764c927c2a19ec1cb85deb88e93560872c04653b0e9e63fbdf6a8edf968bcb"
+
+[[package]]
 name = "crypto-common"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -669,7 +675,7 @@ dependencies = [
 name = "geodukt-io"
 version = "0.1.0"
 dependencies = [
- "crs-definitions",
+ "crs-definitions 0.6.0",
  "csv",
  "geodukt-core",
  "libc",
@@ -1481,7 +1487,7 @@ name = "projicio-core"
 version = "0.1.0"
 source = "git+https://github.com/GeoLang/projicio.git?branch=master#066626af27638a779605db9f92dde9abd4de3abe"
 dependencies = [
- "crs-definitions",
+ "crs-definitions 0.5.0",
  "proj4rs",
  "proj4wkt",
  "projicio-epsg-format",
@@ -2010,7 +2016,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
