@@ -93,8 +93,10 @@ format = "geojson"
 path = "output/parcels_clipped.geojson"
 ```
 
-A source also accepts a `crs` field. Nothing reads it, and it only appears in
-the `/validate` plan. Use a `reproject` transform to change a CRS.
+A source also accepts a `crs` field, an `EPSG:<code>`. A CSV source reads its
+points in it, EPSG:4326 when it is absent. A shapefile source reads in it, and
+in the CRS of its `.prj` when it is absent. Other formats ignore it. It does
+not reproject, use a `reproject` transform to change a CRS.
 
 ## Formats
 
@@ -109,7 +111,10 @@ the `/validate` plan. Use a `reproject` transform to change a CRS.
 
 GeoPackage sources and sinks take an optional `layer` naming the table. A source
 without one reads the first feature table in the file. A sink without one writes
-to `features`.
+to `features`. A sink replaces its own layer in an existing GeoPackage and
+keeps the other layers, so several sinks can write layers into one file. A file
+that is not a GeoPackage fails the step, and a failed write leaves the file as
+it was.
 
 A layer name, and every property key a GeoPackage sink writes, can hold any
 character except a double quote and a NUL, and cannot be empty. Such a name
@@ -148,9 +153,9 @@ path = "output/centroids.shp"
 What each format carries:
 
 - **GeoJSON** holds any geometry type and is assumed to be EPSG:4326.
-- **GeoPackage** round-trips geometry, attribute types (integer, float, text, null), and the CRS as an EPSG code. A property key matching `fid` or `geom` in any ASCII case is dropped on write, and keys differing only by ASCII case fail the write.
-- **Shapefile** writes the .shp, .shx and .dbf files, plus a .prj when the CRS is a known EPSG code. The format holds one geometry type per file, attribute names up to 10 bytes and field widths up to 254 bytes. A numeric column that holds a fraction is written with 8 decimal places. A collection that breaks any of those limits fails the run instead of being written with data lost.
-- **CSV** carries point geometry only, as a `lon,lat` pair followed by one column per property. Writing anything but a point fails the run. Reads accept `lon`/`longitude`/`x` and `lat`/`latitude`/`y`, and assume EPSG:4326. CSV stores no types, so a read infers one per cell: headers come back lowercased, a string that looks like a number comes back as a number, `true`/`false` come back as strings, and an empty cell comes back as an empty string rather than null.
+- **GeoPackage** round-trips geometry, attribute types (integer, float, text, null), and the CRS as an EPSG code. A property key matching `fid` or `geom` in any ASCII case is dropped on write, and keys differing only by ASCII case fail the write. Writes go through [geoplumb](https://github.com/GeoLang/geoplumb), which adds an R-tree index. A collection without a CRS is written as EPSG:4326, and a CRS that is not an EPSG code with known WKT, or a float that is NaN or infinite, fails the write. A boolean column is written as `BOOLEAN` and reads back as 0 or 1, and booleans mixed with numbers in one column are written as text.
+- **Shapefile** writes the .shp, .shx and .dbf files, plus a .prj when the CRS is a known EPSG code. The format holds one geometry type per file, attribute names up to 10 bytes and field widths up to 254 bytes. A numeric column that holds a fraction is written with 8 decimal places. A collection that breaks any of those limits fails the run instead of being written with data lost. Reads go through geoplumb: a numeric column holding only whole numbers reads as integers, a logical column as booleans, and text is decoded in the encoding the .cpg or the .dbf header names. A record with a null shape is skipped. A read with neither a source `crs` nor a .prj naming an EPSG code fails.
+- **CSV** carries point geometry only, as a `lon,lat` pair followed by one column per property. Writing anything but a point fails the run. Reads go through geoplumb and take the first column named `lon`, `longitude` or `x` and the first named `lat`, `latitude` or `y`, in any case. A coordinate that is not a finite number fails the read. CSV stores no types, so a read infers one per cell: a string that looks like a number comes back as a number, `true`/`false` come back as strings, and an empty cell comes back as an empty string rather than null. Headers keep their case.
 
 ## REST API
 
@@ -333,9 +338,10 @@ written. A sink that does not exist yet is checked through its nearest existing
 parent. A request with no verified caller is refused with 401, so the flag needs
 `PLATFORM_JWT_SECRET` set. Every root must exist when the server starts.
 
-A shapefile source reads its `.shx` and `.dbf` from beside the resolved `.shp`,
-and a shapefile sink writes its `.shx`, `.dbf` and `.prj` there. A symlink at any
-of them fails the run with 422, and this also applies without `--caller-root`.
+A shapefile source reads its `.shx`, `.dbf`, `.prj` and `.cpg` from beside the
+resolved `.shp`, and a shapefile sink writes its `.shx`, `.dbf` and `.prj`
+there. A symlink at any of them fails the run with 422, and this also applies
+without `--caller-root`.
 
 The caller directory is the token's `sub` with every character outside
 `A-Za-z0-9_-` replaced by `_`, cut to 64 characters, then `-` and the first 32
@@ -381,7 +387,7 @@ the boundary and drops points outside it on either path.
 ```
 geodukt-core        DAG, wave scheduler, routing onto geoplumb
 geodukt-transforms  spatial operations and the operation registry
-geodukt-io          GeoJSON, GeoPackage, Shapefile and CSV readers and writers
+geodukt-io          GeoJSON, GeoPackage, Shapefile and CSV readers and writers, geoplumb's for shapefile and CSV reads and GeoPackage writes
 geodukt-server      REST API for validation, runs and /gp tools
 geodukt-cli         the geodukt binary
 ```

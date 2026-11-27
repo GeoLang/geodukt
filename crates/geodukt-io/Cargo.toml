@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 geodukt-core = { path = "../geodukt-core" }
 topoi-core = { git = "https://github.com/GeoLang/topoi.git", branch = "master" }
+geoplumb = { git = "https://github.com/GeoLang/geoplumb.git", branch = "master" }
 csv = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

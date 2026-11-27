@@ -4,18 +4,21 @@
 //! through here has limits worth knowing:
 //!
 //! - only point geometry can be written, anything else is an error
-//! - the reader lowercases headers, so mixed case property names come back lowercased
 //! - the reader infers a value type per cell, so a string that looks like a
 //!   number reads back as a number, `true`/`false` read back as strings, and an
 //!   empty cell reads back as an empty string rather than null
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fs;
+use std::path::Path;
 
-use geodukt_core::feature::{Feature, FeatureCollection, Properties, Value};
+use geodukt_core::feature::{FeatureCollection, Properties, Value};
 use geodukt_core::geometry::{FeatureGeometry, Point};
-use geodukt_core::manifest::{Sink, Source};
-use geodukt_core::pipeline::{PipelineError, SinkWriter, SourceReader};
+use geodukt_core::manifest::Sink;
+use geodukt_core::pipeline::{PipelineError, SinkWriter};
+
+use crate::formats::epsg_crs;
+use crate::geojson_io::features_with_geometry;
 
 /// Header of the column holding the point longitude.
 const LON_COLUMN: &str = "lon";
@@ -23,87 +26,29 @@ const LON_COLUMN: &str = "lon";
 /// Header of the column holding the point latitude.
 const LAT_COLUMN: &str = "lat";
 
-/// CSV source reader — expects columns named "lon"/"longitude" and "lat"/"latitude".
-pub struct CsvReader;
-
-impl SourceReader for CsvReader {
-    fn read_source(&self, source: &Source) -> Result<FeatureCollection, PipelineError> {
-        let path = &source.path;
-        let content = fs::read_to_string(path).map_err(|e| PipelineError::Source {
-            name: path.to_string(),
-            message: e.to_string(),
-        })?;
-
-        let mut rdr = csv::Reader::from_reader(content.as_bytes());
-        let headers: Vec<String> = rdr
-            .headers()
-            .map_err(|e| PipelineError::Source {
-                name: path.to_string(),
-                message: e.to_string(),
-            })?
+pub fn read_csv(path: &Path, crs: &Option<String>) -> Result<FeatureCollection, PipelineError> {
+    let source_err = |message: String| PipelineError::Source {
+        name: path.display().to_string(),
+        message,
+    };
+    let crs = epsg_crs(crs).map_err(source_err)?;
+    let headers = csv::Reader::from_path(path)
+        .and_then(|mut reader| reader.headers().cloned())
+        .map_err(|e| source_err(e.to_string()))?;
+    let column = |aliases: [&str; 3]| {
+        headers
             .iter()
-            .map(|h| h.to_lowercase())
-            .collect();
-
-        let lon_idx = headers
-            .iter()
-            .position(|h| h == "lon" || h == "longitude" || h == "x")
-            .ok_or_else(|| PipelineError::Source {
-                name: path.to_string(),
-                message: "no lon/longitude/x column found".to_string(),
-            })?;
-
-        let lat_idx = headers
-            .iter()
-            .position(|h| h == "lat" || h == "latitude" || h == "y")
-            .ok_or_else(|| PipelineError::Source {
-                name: path.to_string(),
-                message: "no lat/latitude/y column found".to_string(),
-            })?;
-
-        let mut features = Vec::new();
-        for record in rdr.records() {
-            let record = record.map_err(|e| PipelineError::Source {
-                name: path.to_string(),
-                message: e.to_string(),
-            })?;
-
-            let lon: f64 = record
-                .get(lon_idx)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
-            let lat: f64 = record
-                .get(lat_idx)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
-
-            let mut props = HashMap::new();
-            for (i, val) in record.iter().enumerate() {
-                if i == lon_idx || i == lat_idx {
-                    continue;
-                }
-                let key = headers
-                    .get(i)
-                    .cloned()
-                    .unwrap_or_else(|| format!("col_{i}"));
-                let value = if let Ok(n) = val.parse::<i64>() {
-                    Value::Integer(n)
-                } else if let Ok(f) = val.parse::<f64>() {
-                    Value::Float(f)
-                } else {
-                    Value::String(val.to_string())
-                };
-                props.insert(key, value);
-            }
-
-            features.push(Feature {
-                geometry: FeatureGeometry::Point(Point::new(lon, lat)),
-                properties: props,
-            });
-        }
-
-        Ok(FeatureCollection::new(features, Some("EPSG:4326".into())))
-    }
+            .find(|header| aliases.contains(&header.to_lowercase().as_str()))
+            .ok_or_else(|| source_err(format!("no {} column found", aliases.join("/"))))
+    };
+    let x_column = column([LON_COLUMN, "longitude", "x"])?;
+    let y_column = column([LAT_COLUMN, "latitude", "y"])?;
+    let collection = geoplumb::elements::read_csv(path, x_column, y_column)
+        .map_err(|e| source_err(e.to_string()))?;
+    Ok(FeatureCollection::new(
+        features_with_geometry(collection),
+        Some(crs.to_string()),
+    ))
 }
 
 fn sink_err(path: &str, message: impl Into<String>) -> PipelineError {
@@ -114,7 +59,7 @@ fn sink_err(path: &str, message: impl Into<String>) -> PipelineError {
 }
 
 /// CSV sink writer — writes a `lon,lat` pair per feature followed by one column
-/// per property, which is the layout [`CsvReader`] expects.
+/// per property, which is the layout [`read_csv`] expects.
 pub struct CsvWriter;
 
 impl SinkWriter for CsvWriter {
@@ -217,41 +162,76 @@ fn cell(properties: &Properties, column: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use geodukt_core::feature::Feature;
     use geodukt_core::geometry::{Coord, Polygon};
-    use std::io::Write;
-    use tempfile::NamedTempFile;
+    use std::collections::HashMap;
+
+    fn csv_file(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("in.csv");
+        fs::write(&path, content).unwrap();
+        (dir, path)
+    }
 
     #[test]
-    fn test_csv_reader() {
-        let csv_data = "name,lon,lat\npark,1.5,2.5\nschool,-0.5,51.5\n";
-        let mut tmp = NamedTempFile::new().unwrap();
-        tmp.write_all(csv_data.as_bytes()).unwrap();
-        let path = tmp.path().to_str().unwrap();
+    fn test_coordinate_columns_resolve_by_alias_in_any_case() {
+        let (_dir, path) = csv_file("Name,Latitude,X\npark,2.5,1.5\n");
 
-        let fc = CsvReader
-            .read_source(&Source {
-                name: "points".into(),
-                format: "csv".into(),
-                path: path.to_string(),
-                crs: None,
-                layer: None,
-            })
-            .unwrap();
-        assert_eq!(fc.len(), 2);
+        let fc = read_csv(&path, &None).unwrap();
+        assert_eq!(fc.len(), 1);
+        assert!(geodukt_core::geometry::equals(
+            &fc.features[0].geometry,
+            &FeatureGeometry::Point(Point::new(1.5, 2.5))
+        ));
         assert_eq!(
-            fc.features[0].properties.get("name"),
-            Some(&Value::String("park".into()))
+            fc.features[0].properties,
+            HashMap::from([("Name".to_string(), Value::String("park".into()))])
         );
     }
 
-    fn source(path: &str) -> Source {
-        Source {
-            name: "in".into(),
-            format: "csv".into(),
-            path: path.to_string(),
-            crs: None,
-            layer: None,
-        }
+    #[test]
+    fn test_crs_comes_from_the_source_and_defaults_to_wgs84() {
+        let (_dir, path) = csv_file("lon,lat\n500000,4000000\n");
+
+        let named = read_csv(&path, &Some("EPSG:32633".into())).unwrap();
+        assert_eq!(named.crs.as_deref(), Some("EPSG:32633"));
+        let unnamed = read_csv(&path, &None).unwrap();
+        assert_eq!(unnamed.crs.as_deref(), Some("EPSG:4326"));
+    }
+
+    #[test]
+    fn test_a_crs_that_is_not_an_epsg_code_is_refused() {
+        let (_dir, path) = csv_file("lon,lat\n1,2\n");
+
+        let error = read_csv(&path, &Some("urn:ogc:def:crs:OGC:1.3:CRS84".into()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("is not EPSG:<code>"), "{error}");
+    }
+
+    #[test]
+    fn test_a_header_only_file_is_an_empty_collection() {
+        let (_dir, path) = csv_file("lon,lat,name\n");
+
+        let fc = read_csv(&path, &None).unwrap();
+        assert!(fc.is_empty());
+        assert_eq!(fc.crs.as_deref(), Some("EPSG:4326"));
+    }
+
+    #[test]
+    fn test_a_coordinate_that_is_not_a_number_fails_naming_its_line() {
+        let (_dir, path) = csv_file("lon,lat\n1,2\nnorth,3\n");
+
+        let error = read_csv(&path, &None).unwrap_err().to_string();
+        assert!(error.contains("line 3"), "{error}");
+    }
+
+    #[test]
+    fn test_a_missing_coordinate_column_is_named() {
+        let (_dir, path) = csv_file("name,lon\npark,1\n");
+
+        let error = read_csv(&path, &None).unwrap_err().to_string();
+        assert!(error.contains("no lat/latitude/y column"), "{error}");
     }
 
     fn sink(path: &str) -> Sink {
@@ -310,9 +290,7 @@ mod tests {
         );
 
         let (_dir, path) = write_to_temp(&fc);
-        let back = CsvReader
-            .read_source(&source(path.to_str().unwrap()))
-            .unwrap();
+        let back = read_csv(&path, &None).unwrap();
 
         assert_eq!(back.len(), 2);
         assert_eq!(back.crs.as_deref(), Some("EPSG:4326"));
@@ -332,9 +310,7 @@ mod tests {
         let (_dir, path) = write_to_temp(&fc);
 
         assert!(fs::read_to_string(&path).unwrap().contains("2.0"));
-        let back = CsvReader
-            .read_source(&source(path.to_str().unwrap()))
-            .unwrap();
+        let back = read_csv(&path, &None).unwrap();
         assert_eq!(
             back.features[0].properties.get("v"),
             Some(&Value::Float(2.0))
@@ -393,9 +369,7 @@ mod tests {
                 .contains("\"Paris, France\"")
         );
 
-        let back = CsvReader
-            .read_source(&source(path.to_str().unwrap()))
-            .unwrap();
+        let back = read_csv(&path, &None).unwrap();
         assert_eq!(
             back.features[0].properties.get("name"),
             Some(&Value::String("Paris, France".into()))

@@ -10,7 +10,7 @@ use geodukt_core::manifest::Manifest;
 use geodukt_core::pipeline::Pipeline;
 use geodukt_io::formats::{MultiFormatReader, MultiFormatWriter};
 use geodukt_io::geopackage_io::{read_geopackage, write_geopackage};
-use geodukt_io::shapefile_io::read_shapefile;
+use geodukt_io::shapefile_io::{read_shapefile, write_shapefile};
 use geodukt_transforms::registry::default_registry;
 
 fn run(manifest_toml: &str) -> Vec<usize> {
@@ -170,7 +170,7 @@ path = "{output}"
     let prj = std::fs::read_to_string(output.with_extension("prj")).unwrap();
     assert!(prj.contains("4326"), "prj should describe EPSG:4326: {prj}");
 
-    let written = read_shapefile(&output).unwrap();
+    let written = read_shapefile(&output, &None).unwrap();
     assert_eq!(written.len(), 2);
     assert!(matches!(
         written.features[0].geometry,
@@ -180,11 +180,116 @@ path = "{output}"
         written.features[0].properties.get("name"),
         Some(&Value::String("alpha".into()))
     );
-    // dBase stores numbers as fixed point text, so integers come back as floats
+    // geoplumb reads a dBase numeric column holding only whole numbers as integers
     assert_eq!(
         written.features[1].properties.get("id"),
-        Some(&Value::Float(2.0))
+        Some(&Value::Integer(2))
     );
+}
+
+#[test]
+fn test_shapefile_source_without_a_prj_takes_the_manifest_crs() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("sites.shp");
+    let output = dir.path().join("sites.gpkg");
+    write_shapefile(
+        &input,
+        &FeatureCollection::new(vec![parcel(500_000.0, "pier", 1, 4.0)], None),
+    )
+    .unwrap();
+    assert!(!input.with_extension("prj").exists());
+
+    let counts = run(&format!(
+        r#"
+[project]
+name = "shapefile-crs"
+
+[[source]]
+name = "sites"
+format = "shapefile"
+path = "{input}"
+crs = "EPSG:32633"
+
+[[sink]]
+name = "out"
+input = "sites"
+format = "geopackage"
+path = "{output}"
+"#,
+        input = input.display(),
+        output = output.display()
+    ));
+    assert_eq!(counts, vec![1, 1]);
+
+    let written = read_geopackage(&output, None).unwrap();
+    assert_eq!(written.crs.as_deref(), Some("EPSG:32633"));
+    assert_eq!(
+        written.features[0].properties.get("name"),
+        Some(&Value::String("pier".into()))
+    );
+}
+
+#[test]
+fn test_two_sinks_write_two_layers_into_one_geopackage() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("parcels.gpkg");
+    let output = dir.path().join("out").join("city.gpkg");
+    write_geopackage(
+        &input,
+        &FeatureCollection::new(
+            vec![parcel(0.0, "north", 1, 4.0), parcel(10.0, "south", 2, 4.5)],
+            Some("EPSG:4326".into()),
+        ),
+        "parcels",
+    )
+    .unwrap();
+
+    let counts = run(&format!(
+        r#"
+[project]
+name = "two-layers"
+
+[[source]]
+name = "parcels"
+format = "geopackage"
+path = "{input}"
+
+[[transform]]
+name = "centers"
+input = "parcels"
+operation = "centroid"
+
+[[sink]]
+name = "shapes"
+input = "parcels"
+format = "geopackage"
+path = "{output}"
+layer = "parcels"
+
+[[sink]]
+name = "points"
+input = "centers"
+format = "geopackage"
+path = "{output}"
+layer = "centroids"
+"#,
+        input = input.display(),
+        output = output.display()
+    ));
+    assert_eq!(counts.len(), 4);
+
+    let shapes = read_geopackage(&output, Some("parcels")).unwrap();
+    assert_eq!(shapes.len(), 2);
+    assert!(matches!(
+        shapes.features[0].geometry,
+        FeatureGeometry::Polygon(_)
+    ));
+    let points = read_geopackage(&output, Some("centroids")).unwrap();
+    assert_eq!(points.len(), 2);
+    assert!(matches!(
+        points.features[0].geometry,
+        FeatureGeometry::Point(_)
+    ));
 }
 
 #[test]

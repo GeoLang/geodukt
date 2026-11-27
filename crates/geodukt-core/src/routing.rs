@@ -163,6 +163,7 @@ impl EngineRouter {
         let req = WindowReq {
             bbox: run.extent,
             resolution: run.engine.grid(node).base_resolution,
+            time: None,
         };
         let chunk = futures::executor::block_on(run.engine.pull(node, req))
             .and_then(|chunk| chunk.into_vector())
@@ -301,7 +302,7 @@ pub fn from_json(value: &serde_json::Value) -> Option<Value> {
 
 /// The EPSG code a collection carries. An absent crs is wgs84, and anything
 /// that is not `EPSG:<code>` keeps the collection off the engine.
-fn crs_code(crs: &Option<String>) -> Option<u32> {
+pub fn crs_code(crs: &Option<String>) -> Option<u32> {
     let Some(crs) = crs else { return Some(4326) };
     let (authority, code) = crs.split_once(':')?;
     if !authority.eq_ignore_ascii_case("EPSG") {

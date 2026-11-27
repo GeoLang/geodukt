@@ -1,6 +1,9 @@
 FROM rust:bookworm AS builder
 
 WORKDIR /app
+# turbojpeg, under geoplumb's terrano, builds libjpeg-turbo from source with cmake, and nasm for its SIMD code
+RUN apt-get update && apt-get install -y --no-install-recommends cmake nasm \
+    && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN cargo build --release -p geodukt-cli
 

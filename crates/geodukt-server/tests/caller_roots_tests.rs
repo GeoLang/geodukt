@@ -240,7 +240,11 @@ fn write_point_shapefile(path: &Path, name: &str) {
         geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
         properties: HashMap::from([("name".to_string(), Value::String(name.to_string()))]),
     };
-    write_shapefile(path, &FeatureCollection::new(vec![feature], None)).unwrap();
+    write_shapefile(
+        path,
+        &FeatureCollection::new(vec![feature], Some("EPSG:4326".into())),
+    )
+    .unwrap();
 }
 
 fn shapefile_manifest(source: &Path, sink: &Path) -> String {

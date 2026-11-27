@@ -200,6 +200,78 @@ fn test_geopackage_write_replaces_layer() {
     assert_eq!(read_geopackage(&path, Some("layer_b")).unwrap().len(), 1);
 }
 
+#[test]
+fn test_geopackage_write_leaves_a_file_that_is_not_a_geopackage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("notes.gpkg");
+    std::fs::write(&path, "not a database").unwrap();
+
+    let error = write_geopackage(&path, &one_point_with("id"), "layer")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("is not a geopackage"), "{error}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "not a database");
+}
+
+#[test]
+fn test_geopackage_failed_write_keeps_the_previous_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("kept.gpkg");
+    write_geopackage(&path, &one_point_with("id"), "layer").unwrap();
+
+    let clashing = FeatureCollection::new(
+        vec![Feature {
+            geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
+            properties: HashMap::from([
+                ("Name".to_string(), Value::String("a".into())),
+                ("name".to_string(), Value::String("b".into())),
+            ]),
+        }],
+        None,
+    );
+    write_geopackage(&path, &clashing, "layer").unwrap_err();
+
+    let back = read_geopackage(&path, Some("layer")).unwrap();
+    assert_eq!(
+        back.features[0].properties,
+        HashMap::from([("id".to_string(), Value::Integer(1))])
+    );
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn test_geopackage_write_refuses_a_crs_that_is_not_an_epsg_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("crs.gpkg");
+    let mut fc = one_point_with("id");
+    fc.crs = Some("urn:ogc:def:crs:OGC:1.3:CRS84".into());
+
+    let error = write_geopackage(&path, &fc, "layer")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("is not EPSG:<code>"), "{error}");
+    assert!(!path.exists());
+}
+
+#[test]
+fn test_geopackage_write_refuses_a_non_finite_float() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nan.gpkg");
+    let fc = FeatureCollection::new(
+        vec![Feature {
+            geometry: FeatureGeometry::Point(Point::new(1.0, 2.0)),
+            properties: HashMap::from([("ratio".to_string(), Value::Float(f64::NAN))]),
+        }],
+        None,
+    );
+
+    let error = write_geopackage(&path, &fc, "layer")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("property 'ratio'"), "{error}");
+    assert!(!path.exists());
+}
+
 /// Every geometry the GeoPackage writer encodes has to come back out of the
 /// reader unchanged, including a nested collection.
 #[test]
@@ -319,10 +391,7 @@ fn test_geopackage_write_refuses_a_layer_name_with_a_double_quote() {
     )
     .unwrap_err()
     .to_string();
-    assert!(
-        error.contains("layer name") && error.contains("cannot contain a double quote"),
-        "{error}"
-    );
+    assert!(error.contains("contains a double quote"), "{error}");
     assert!(
         !path.exists(),
         "the file was opened before the name was checked"
@@ -337,10 +406,8 @@ fn test_geopackage_refuses_an_empty_layer_name() {
     let write_error = write_geopackage(&path, &one_point_with("id"), "")
         .unwrap_err()
         .to_string();
-    assert!(
-        write_error.contains("layer name cannot be empty"),
-        "{write_error}"
-    );
+    assert!(write_error.contains("cannot be empty"), "{write_error}");
+    assert!(!path.exists());
 
     write_geopackage(&path, &one_point_with("id"), "layer").unwrap();
     let read_error = read_geopackage(&path, Some("")).unwrap_err().to_string();
@@ -359,7 +426,7 @@ fn test_geopackage_write_refuses_a_property_key_that_cannot_be_quoted() {
         let error = write_geopackage(&path, &one_point_with(key), "layer")
             .unwrap_err()
             .to_string();
-        assert!(error.contains("property key"), "{key:?}: {error}");
+        assert!(error.contains("geopackage identifier"), "{key:?}: {error}");
         assert!(
             !path.exists(),
             "{key:?}: the file was opened before the key was checked"
@@ -444,12 +511,21 @@ fn test_geopackage_write_drops_keys_naming_the_reserved_columns_in_any_case() {
 fn test_geopackage_read_skips_reserved_columns_declared_in_another_case() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("foreign.gpkg");
-    write_geopackage(&path, &one_point_with("id"), "pois").unwrap();
-
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
-        "ALTER TABLE pois RENAME COLUMN fid TO FID;
-         ALTER TABLE pois RENAME COLUMN geom TO GEOM;",
+        "CREATE TABLE gpkg_contents (table_name TEXT PRIMARY KEY, data_type TEXT, srs_id INTEGER);
+         CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT);
+         INSERT INTO gpkg_contents VALUES ('pois', 'features', 4326);
+         INSERT INTO gpkg_geometry_columns VALUES ('pois', 'geom');
+         CREATE TABLE pois (FID INTEGER PRIMARY KEY, GEOM BLOB, id INTEGER);",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO pois (GEOM, id) VALUES (?1, 1)",
+        [topoi_core::write_geopackage_geometry(
+            &FeatureGeometry::Point(Point::new(1.0, 2.0)),
+            4326,
+        )],
     )
     .unwrap();
     drop(conn);
@@ -484,13 +560,8 @@ fn test_geopackage_write_refuses_keys_that_differ_only_by_case() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("'Name'")
-            && error.contains("'name'")
-            && error.contains("differ only by case"),
+        error.contains("Name") && error.contains("name") && error.contains("case is ignored"),
         "{error}"
     );
-    assert!(
-        !path.exists(),
-        "the file was opened before the keys were checked"
-    );
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }

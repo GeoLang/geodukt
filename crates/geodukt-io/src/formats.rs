@@ -11,9 +11,11 @@ use std::path::Path;
 use geodukt_core::feature::FeatureCollection;
 use geodukt_core::manifest::{DEFAULT_LAYER, Sink, Source};
 use geodukt_core::pipeline::{PipelineError, SinkWriter, SourceReader};
+use geodukt_core::routing::crs_code;
+use geoplumb::Crs;
 use serde::Serialize;
 
-use crate::csv_io::{CsvReader, CsvWriter};
+use crate::csv_io::{CsvWriter, read_csv};
 use crate::geojson_io::{GeoJsonReader, GeoJsonWriter};
 use crate::geopackage_io::{read_geopackage, write_geopackage};
 use crate::shapefile_io::{read_shapefile, write_shapefile};
@@ -38,8 +40,8 @@ const FORMATS: &[FormatSpec] = &[
         aliases: &[],
         reads: true,
         writes: true,
-        fields: &["path"],
-        description: "Point geometry as lon/lat columns, one column per property, assumed EPSG:4326",
+        fields: &["path", "crs"],
+        description: "Point geometry as lon/lat columns, one column per property, EPSG:4326 unless the source names a crs",
     },
     FormatSpec {
         name: "geojson",
@@ -62,8 +64,8 @@ const FORMATS: &[FormatSpec] = &[
         aliases: &["shp"],
         reads: true,
         writes: true,
-        fields: &["path"],
-        description: "Shapefile with .shx/.dbf/.prj sidecars, one geometry type per file",
+        fields: &["path", "crs"],
+        description: "Shapefile with .shx/.dbf/.prj sidecars, one geometry type per file, the crs from the source or else the .prj",
     },
 ];
 
@@ -108,10 +110,10 @@ impl SourceReader for MultiFormatReader {
     fn read_source(&self, source: &Source) -> Result<FeatureCollection, PipelineError> {
         let path = Path::new(&source.path);
         match format(&source.format).map(|f| f.name) {
-            Some("csv") => CsvReader.read_source(source),
+            Some("csv") => read_csv(path, &source.crs),
             Some("geojson") => GeoJsonReader.read_source(source),
             Some("geopackage") => read_geopackage(path, source.layer.as_deref()),
-            Some("shapefile") => read_shapefile(path),
+            Some("shapefile") => read_shapefile(path, &source.crs),
             _ => Err(PipelineError::Source {
                 name: source.name.clone(),
                 message: unsupported(&source.format),
@@ -139,6 +141,15 @@ impl SinkWriter for MultiFormatWriter {
             }),
         }
     }
+}
+
+pub(crate) fn epsg_crs(crs: &Option<String>) -> Result<Crs, String> {
+    crs_code(crs).map(Crs).ok_or_else(|| {
+        format!(
+            "crs '{}' is not EPSG:<code>",
+            crs.as_deref().unwrap_or_default()
+        )
+    })
 }
 
 /// Create the directory a sink writes into, so a manifest can name an output

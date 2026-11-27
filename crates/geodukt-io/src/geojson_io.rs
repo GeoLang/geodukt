@@ -24,23 +24,28 @@ impl SourceReader for GeoJsonReader {
             message: format!("invalid GeoJSON: {e}"),
         })?;
 
-        let features = parsed
-            .features
-            .into_iter()
-            .filter_map(|f| {
-                Some(Feature {
-                    geometry: f.geometry?,
-                    properties: f
-                        .properties
-                        .iter()
-                        .map(|(k, v)| (k.clone(), json_to_value(v)))
-                        .collect(),
-                })
-            })
-            .collect();
-
-        Ok(FeatureCollection::new(features, Some("EPSG:4326".into())))
+        Ok(FeatureCollection::new(
+            features_with_geometry(parsed),
+            Some("EPSG:4326".into()),
+        ))
     }
+}
+
+pub(crate) fn features_with_geometry(collection: geojson::FeatureCollection) -> Vec<Feature> {
+    collection
+        .features
+        .into_iter()
+        .filter_map(|f| {
+            Some(Feature {
+                geometry: f.geometry?,
+                properties: f
+                    .properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), json_to_value(v)))
+                    .collect(),
+            })
+        })
+        .collect()
 }
 
 /// GeoJSON sink writer.

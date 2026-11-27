@@ -43,6 +43,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ignore ASCII case.
 
 ### Changed
+- 2026-11-27: shapefile and CSV sources read through geoplumb's
+  `read_shapefile` and `read_csv`, and GeoPackage sinks write through
+  geoplumb's `write_geopackage`. geodukt-io's own copies are deleted. A
+  source's `crs` now sets the CRS of a CSV, and of a shapefile, whose `.prj`
+  is read when it is absent, so a shapefile with neither fails. Whole-number
+  dBase columns read as integers, logical columns as booleans, `.cpg` and
+  `.dbf` encodings are decoded, a null shape is skipped instead of reading as
+  the origin point, CSV headers keep their case, and a coordinate that is not
+  a number fails the read naming its line instead of reading as 0. A
+  GeoPackage sink replaces its layer in one transaction with an R-tree index,
+  keeps the file's other layers, and fails on a file that is not a
+  GeoPackage, a CRS that is not an EPSG code, or a NaN. A symlinked `.prj` or
+  `.cpg` beside a shapefile source is refused like `.shx` and `.dbf`.
 - 2026-11-04: token checks use the shared `platform-auth` crate. A token with an
   empty `sub`, a `geolang_use` claim, an `agora_use` claim, a `token_use` set to
   null, a non-string `aud` or a `name` that is a number, boolean, array or object

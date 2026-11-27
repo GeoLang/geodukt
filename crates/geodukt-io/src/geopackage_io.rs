@@ -4,10 +4,14 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use geodukt_core::feature::{Feature, FeatureCollection, Value};
-use geodukt_core::geometry::{Coord, FeatureGeometry, Point, Polygon};
+use geodukt_core::geometry::{FeatureGeometry, Point};
 use geodukt_core::pipeline::PipelineError;
+use geodukt_core::routing::to_json;
+use geoplumb::VectorFeature;
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
+
+use crate::formats::epsg_crs;
 
 /// Parse GeoPackage binary geometry (GP header + WKB), or raw WKB without the
 /// `GP` magic.
@@ -23,83 +27,6 @@ fn parse_gpkg_geometry(data: &[u8]) -> FeatureGeometry {
 /// What an unreadable blob decodes to, so one bad row does not fail the read.
 fn origin() -> FeatureGeometry {
     FeatureGeometry::Point(Point::new(0.0, 0.0))
-}
-
-/// A GeoPackage geometry blob: the GP header with no envelope, followed by
-/// little-endian WKB.
-fn gpkg_blob(geom: &FeatureGeometry, srs: i32) -> Vec<u8> {
-    let mut out = vec![b'G', b'P', 0, 0b0000_0001];
-    out.extend_from_slice(&srs.to_le_bytes());
-    write_wkb(geom, &mut out);
-    out
-}
-
-fn write_wkb(geom: &FeatureGeometry, out: &mut Vec<u8>) {
-    let kind: u32 = match geom {
-        FeatureGeometry::Point(_) => 1,
-        FeatureGeometry::LineString(_) => 2,
-        FeatureGeometry::Polygon(_) => 3,
-        FeatureGeometry::MultiPoint(_) => 4,
-        FeatureGeometry::MultiLineString(_) => 5,
-        FeatureGeometry::MultiPolygon(_) => 6,
-        FeatureGeometry::GeometryCollection(_) => 7,
-    };
-    out.push(1);
-    out.extend_from_slice(&kind.to_le_bytes());
-
-    match geom {
-        FeatureGeometry::Point(p) => write_coord(p.0, out),
-        FeatureGeometry::LineString(ls) => write_coords(ls.coords(), out),
-        FeatureGeometry::Polygon(poly) => write_polygon(poly, out),
-        FeatureGeometry::MultiPoint(mp) => {
-            write_count(mp.points().len(), out);
-            for p in mp.points() {
-                write_wkb(&FeatureGeometry::Point(*p), out);
-            }
-        }
-        FeatureGeometry::MultiLineString(mls) => {
-            write_count(mls.linestrings().len(), out);
-            for ls in mls.linestrings() {
-                write_wkb(&FeatureGeometry::LineString(ls.clone()), out);
-            }
-        }
-        FeatureGeometry::MultiPolygon(mp) => {
-            write_count(mp.polygons().len(), out);
-            for poly in mp.polygons() {
-                write_wkb(&FeatureGeometry::Polygon(poly.clone()), out);
-            }
-        }
-        FeatureGeometry::GeometryCollection(members) => {
-            write_count(members.len(), out);
-            for member in members {
-                write_wkb(member, out);
-            }
-        }
-    }
-}
-
-fn write_count(n: usize, out: &mut Vec<u8>) {
-    out.extend_from_slice(&(n as u32).to_le_bytes());
-}
-
-fn write_coord(c: Coord, out: &mut Vec<u8>) {
-    out.extend_from_slice(&c.x.to_le_bytes());
-    out.extend_from_slice(&c.y.to_le_bytes());
-}
-
-fn write_coords(coords: &[Coord], out: &mut Vec<u8>) {
-    write_count(coords.len(), out);
-    for c in coords {
-        write_coord(*c, out);
-    }
-}
-
-fn write_polygon(poly: &Polygon, out: &mut Vec<u8>) {
-    write_count(1 + poly.interiors().len(), out);
-    write_coords(poly.exterior().coords(), out);
-    for hole in poly.interiors() {
-        write_coords(hole.coords(), out);
-    }
 }
 
 /// Read features from a GeoPackage file.
@@ -261,211 +188,39 @@ fn sink_err(e: impl std::fmt::Display) -> PipelineError {
     }
 }
 
-/// SQLite column type for a property, chosen from every value seen for that key.
-/// Mixed kinds fall back to TEXT, which SQLite accepts for anything.
-fn column_type(fc: &FeatureCollection, key: &str) -> &'static str {
-    let mut integer = false;
-    let mut real = false;
-    let mut other = false;
-
-    for feature in &fc.features {
-        match feature.properties.get(key) {
-            None | Some(Value::Null) => {}
-            Some(Value::Integer(_)) | Some(Value::Bool(_)) => integer = true,
-            Some(Value::Float(_)) => real = true,
-            Some(Value::String(_)) => other = true,
-        }
-    }
-
-    match (integer, real, other) {
-        (_, _, true) => "TEXT",
-        (true, true, false) | (false, true, false) => "REAL",
-        (true, false, false) => "INTEGER",
-        (false, false, false) => "TEXT",
-    }
-}
-
-fn to_sql(value: Option<&Value>) -> rusqlite::types::Value {
-    use rusqlite::types::Value as Sql;
-    match value {
-        None | Some(Value::Null) => Sql::Null,
-        Some(Value::Bool(b)) => Sql::Integer(*b as i64),
-        Some(Value::Integer(i)) => Sql::Integer(*i),
-        Some(Value::Float(f)) => Sql::Real(*f),
-        Some(Value::String(s)) => Sql::Text(s.clone()),
-    }
-}
-
-/// The gpkg_geometry_columns type name for the layer. A layer holding more than
-/// one geometry type is declared as the generic GEOMETRY.
-fn geometry_type_name(fc: &FeatureCollection) -> &'static str {
-    let name_of = |g: &FeatureGeometry| match g {
-        FeatureGeometry::Point(_) => "POINT",
-        FeatureGeometry::LineString(_) => "LINESTRING",
-        FeatureGeometry::Polygon(_) => "POLYGON",
-        FeatureGeometry::MultiPoint(_) => "MULTIPOINT",
-        FeatureGeometry::MultiLineString(_) => "MULTILINESTRING",
-        FeatureGeometry::MultiPolygon(_) => "MULTIPOLYGON",
-        FeatureGeometry::GeometryCollection(_) => "GEOMETRYCOLLECTION",
-    };
-
-    let mut kinds = fc.features.iter().map(|f| name_of(&f.geometry));
-    match kinds.next() {
-        Some(first) if kinds.all(|k| k == first) => first,
-        _ => "GEOMETRY",
-    }
-}
-
-/// EPSG code from a CRS string like `EPSG:4326`, defaulting to 4326 because
-/// that is what the GeoJSON reader and the CSV reader produce.
-fn srs_id(crs: Option<&str>) -> i32 {
-    crs.and_then(|c| c.split_once(':'))
-        .filter(|(authority, _)| authority.eq_ignore_ascii_case("EPSG"))
-        .and_then(|(_, code)| code.trim().parse().ok())
-        .unwrap_or(4326)
-}
-
-/// Write features to a GeoPackage file. Geometries go in as GeoPackage binary
-/// (GP header plus WKB), attributes keep their type, and the layer is
-/// registered in gpkg_contents so other GeoPackage readers find it.
-///
-/// The layer is replaced, so re-running a pipeline does not append a second copy
-/// of the data. Other layers in the same file are left alone.
 pub fn write_geopackage(
     path: &Path,
     fc: &FeatureCollection,
     table: &str,
 ) -> Result<(), PipelineError> {
-    // Attribute columns come from every feature, so a collection whose
-    // features carry different keys does not lose the extra ones
-    let mut columns: Vec<String> = fc
+    let crs = epsg_crs(&fc.crs).map_err(sink_err)?;
+    let features = fc
         .features
         .iter()
-        .flat_map(|f| f.properties.keys().cloned())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    columns.retain(|c| !c.eq_ignore_ascii_case("fid") && !c.eq_ignore_ascii_case("geom"));
-
-    require_double_quotable_identifier("layer name", table).map_err(sink_err)?;
-    for column in &columns {
-        require_double_quotable_identifier("property key", column).map_err(sink_err)?;
-    }
-    // sqlite compares column names with ascii case folding
-    let mut keys_by_folded_name: HashMap<String, &String> = HashMap::new();
-    for column in &columns {
-        if let Some(other) = keys_by_folded_name.insert(column.to_ascii_lowercase(), column) {
-            return Err(sink_err(format!(
-                "property keys '{other}' and '{column}' differ only by case, which a GeoPackage column name ignores, rename one"
-            )));
-        }
-    }
-
+        .enumerate()
+        .map(|(id, feature)| vector_feature(id as u64, feature))
+        .collect::<Result<Vec<_>, _>>()?;
     crate::formats::create_parent_dir(path).map_err(sink_err)?;
-    let conn = Connection::open(path).map_err(|e| sink_err(format!("failed to open: {e}")))?;
-    let srs = srs_id(fc.crs.as_deref());
-
-    // GPKG magic in the SQLite application_id header field, so the file
-    // identifies itself as a GeoPackage and not a bare SQLite database.
-    // user_version is the spec version times 10000, GDAL warns without it.
-    conn.pragma_update(None, "application_id", 0x4750_4B47i32)
-        .map_err(sink_err)?;
-    conn.pragma_update(None, "user_version", 10300i32)
-        .map_err(sink_err)?;
-
-    // Create GeoPackage metadata tables
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS gpkg_contents (
-            table_name TEXT NOT NULL PRIMARY KEY,
-            data_type TEXT NOT NULL,
-            identifier TEXT,
-            description TEXT DEFAULT '',
-            last_change DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-            min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE,
-            srs_id INTEGER
-        );
-        CREATE TABLE IF NOT EXISTS gpkg_spatial_ref_sys (
-            srs_name TEXT NOT NULL,
-            srs_id INTEGER NOT NULL PRIMARY KEY,
-            organization TEXT NOT NULL,
-            organization_coordsys_id INTEGER NOT NULL,
-            definition TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS gpkg_geometry_columns (
-            table_name TEXT NOT NULL,
-            column_name TEXT NOT NULL,
-            geometry_type_name TEXT NOT NULL,
-            srs_id INTEGER NOT NULL,
-            z TINYINT NOT NULL,
-            m TINYINT NOT NULL,
-            CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name)
-        );",
-    )
-    .map_err(sink_err)?;
-
-    // the two rows the GeoPackage spec requires, plus the layer's own CRS
-    conn.execute(
-        "INSERT OR REPLACE INTO gpkg_spatial_ref_sys
-            (srs_name, srs_id, organization, organization_coordsys_id, definition)
-         VALUES ('Undefined cartesian', -1, 'NONE', -1, 'undefined'),
-                ('Undefined geographic', 0, 'NONE', 0, 'undefined'),
-                (?1, ?2, 'EPSG', ?2, ?3)",
-        rusqlite::params![format!("EPSG:{srs}"), srs, crs_wkt(srs)],
-    )
-    .map_err(sink_err)?;
-
-    let col_defs: String = columns
-        .iter()
-        .map(|c| format!(", \"{c}\" {}", column_type(fc, c)))
-        .collect();
-
-    // dropped first so a re-run replaces the layer instead of appending to it,
-    // and so a changed attribute schema does not clash with the old columns
-    conn.execute_batch(&format!(
-        "DROP TABLE IF EXISTS \"{table}\";
-         CREATE TABLE \"{table}\" (fid INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB{col_defs});"
-    ))
-    .map_err(sink_err)?;
-
-    conn.execute(
-        "INSERT OR REPLACE INTO gpkg_contents (table_name, data_type, identifier, srs_id)
-         VALUES (?1, 'features', ?1, ?2)",
-        rusqlite::params![table, srs],
-    )
-    .map_err(sink_err)?;
-
-    conn.execute(
-        "INSERT OR REPLACE INTO gpkg_geometry_columns
-            (table_name, column_name, geometry_type_name, srs_id, z, m)
-         VALUES (?1, 'geom', ?2, ?3, 0, 0)",
-        rusqlite::params![table, geometry_type_name(fc), srs],
-    )
-    .map_err(sink_err)?;
-
-    let placeholders: String = (2..columns.len() + 2)
-        .map(|i| format!(", ?{i}"))
-        .collect::<String>();
-    let col_names: String = columns.iter().map(|c| format!(", \"{c}\"")).collect();
-    let insert_sql = format!("INSERT INTO \"{table}\" (geom{col_names}) VALUES (?1{placeholders})");
-    let mut stmt = conn.prepare(&insert_sql).map_err(sink_err)?;
-
-    for feature in &fc.features {
-        let blob = gpkg_blob(&feature.geometry, srs);
-
-        let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Blob(blob)];
-        params.extend(columns.iter().map(|c| to_sql(feature.properties.get(c))));
-
-        stmt.execute(rusqlite::params_from_iter(params))
-            .map_err(sink_err)?;
-    }
-
-    Ok(())
+    geoplumb::elements::write_geopackage(path, table, &features, crs).map_err(sink_err)
 }
 
-fn crs_wkt(srs: i32) -> String {
-    u16::try_from(srs)
-        .ok()
-        .and_then(crs_definitions::from_code)
-        .map(|def| def.wkt.to_string())
-        .unwrap_or_else(|| "undefined".to_string())
+fn vector_feature(id: u64, feature: &Feature) -> Result<VectorFeature, PipelineError> {
+    let mut properties = HashMap::with_capacity(feature.properties.len());
+    for (key, value) in &feature.properties {
+        // geoplumb's write_geopackage names its primary key fid and its geometry column geom
+        if key.eq_ignore_ascii_case("fid") || key.eq_ignore_ascii_case("geom") {
+            continue;
+        }
+        let json = to_json(value).ok_or_else(|| {
+            sink_err(format!(
+                "property '{key}' is {value:?}, which a GeoPackage column cannot hold"
+            ))
+        })?;
+        properties.insert(key.clone(), json);
+    }
+    Ok(VectorFeature {
+        id,
+        geometry: feature.geometry.clone(),
+        properties,
+    })
 }

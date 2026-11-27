@@ -5,30 +5,25 @@
 //! holds exactly one geometry type. Writes that would break either rule fail
 //! instead of producing a file other tools would read differently.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::io::{BufWriter, Write};
+use std::path::Path;
 
-use geodukt_core::feature::{Feature, FeatureCollection, Properties, Value};
-use geodukt_core::geometry::{
-    Coord, FeatureGeometry, LineString, MultiLineString, Point, Polygon, Ring,
-};
+use geodukt_core::feature::{FeatureCollection, Properties, Value};
+use geodukt_core::geometry::{Coord, FeatureGeometry, Polygon};
 use geodukt_core::pipeline::PipelineError;
 use shapefile::dbase::{FieldName, FieldValue, Record, TableWriterBuilder};
 use shapefile::record::EsriShape;
+
+use crate::formats::epsg_crs;
+use crate::geojson_io::features_with_geometry;
 
 fn source_err(message: impl Into<String>) -> PipelineError {
     PipelineError::Source {
         name: "shapefile".into(),
         message: message.into(),
     }
-}
-
-fn open_buffered(path: &Path) -> Result<BufReader<File>, PipelineError> {
-    File::open(path)
-        .map(BufReader::new)
-        .map_err(|e| source_err(format!("failed to open {}: {e}", path.display())))
 }
 
 #[cfg(unix)]
@@ -56,115 +51,20 @@ fn open_without_following_symlinks(
     options.open(path)
 }
 
-fn open_sidecar(path: &Path) -> Result<BufReader<File>, PipelineError> {
-    open_without_following_symlinks(OpenOptions::new().read(true), path)
-        .map(BufReader::new)
-        .map_err(|e| {
-            source_err(format!(
-                "failed to open sidecar {} without following symlinks: {e}",
-                path.display()
-            ))
-        })
-}
-
-fn required_sidecar(shp_path: &Path, lowercase_extension: &str) -> Result<PathBuf, PipelineError> {
-    let extension = if shp_path.extension().and_then(|e| e.to_str()) == Some("SHP") {
-        lowercase_extension.to_ascii_uppercase()
-    } else {
-        lowercase_extension.to_string()
+pub fn read_shapefile(
+    path: &Path,
+    crs: &Option<String>,
+) -> Result<FeatureCollection, PipelineError> {
+    let crs = match crs {
+        Some(_) => Some(epsg_crs(crs).map_err(source_err)?),
+        None => None,
     };
-    let sidecar = shp_path.with_extension(extension);
-    // Path::exists follows symlinks, which reveals whether a path outside the root exists
-    if sidecar.symlink_metadata().is_ok() {
-        return Ok(sidecar);
-    }
-    Err(source_err(format!(
-        "{} is missing, a shapefile needs its .shx and .dbf files next to the .shp",
-        sidecar.display()
-    )))
-}
-
-/// Read features from a Shapefile.
-pub fn read_shapefile(path: &Path) -> Result<FeatureCollection, PipelineError> {
-    let shx_path = required_sidecar(path, "shx")?;
-    let dbf_path = required_sidecar(path, "dbf")?;
-
-    // opened by hand because shapefile::Reader::from_path only looks for lowercase sidecars
-    let shape_reader =
-        shapefile::ShapeReader::with_shx(open_buffered(path)?, open_sidecar(&shx_path)?)
-            .map_err(|e| source_err(format!("failed to open {}: {e}", path.display())))?;
-    let dbase_reader = shapefile::dbase::Reader::new(open_sidecar(&dbf_path)?)
-        .map_err(|e| source_err(format!("failed to open {}: {e}", dbf_path.display())))?;
-    let mut reader = shapefile::Reader::new(shape_reader, dbase_reader);
-
-    let mut features = Vec::new();
-
-    for result in reader.iter_shapes_and_records() {
-        let (shape, record) = result.map_err(|e| source_err(e.to_string()))?;
-
-        let geometry = shape_to_geometry(&shape);
-        let mut properties = HashMap::new();
-
-        for (name, value) in record.into_iter() {
-            let v = match value {
-                shapefile::dbase::FieldValue::Character(Some(s)) => Value::String(s),
-                shapefile::dbase::FieldValue::Numeric(Some(n)) => Value::Float(n),
-                shapefile::dbase::FieldValue::Float(Some(n)) => Value::Float(n as f64),
-                shapefile::dbase::FieldValue::Integer(n) => Value::Integer(n as i64),
-                _ => Value::Null,
-            };
-            properties.insert(name, v);
-        }
-
-        features.push(Feature {
-            geometry,
-            properties,
-        });
-    }
-
-    Ok(FeatureCollection::new(features, None))
-}
-
-fn shape_to_geometry(shape: &shapefile::Shape) -> FeatureGeometry {
-    match shape {
-        shapefile::Shape::Point(p) => FeatureGeometry::Point(Point::new(p.x, p.y)),
-        shapefile::Shape::Polyline(pl) => {
-            let lines: Vec<LineString> = pl
-                .parts()
-                .iter()
-                .map(|part| LineString::new(part.iter().map(|p| Coord::new(p.x, p.y)).collect()))
-                .collect();
-            if lines.len() == 1 {
-                FeatureGeometry::LineString(lines.into_iter().next().unwrap())
-            } else {
-                FeatureGeometry::MultiLineString(MultiLineString::new(lines))
-            }
-        }
-        shapefile::Shape::Polygon(pg) => {
-            let mut exterior = None;
-            let mut interiors = Vec::new();
-            for ring in pg.rings() {
-                let coords: Vec<Coord> = match ring {
-                    shapefile::PolygonRing::Outer(pts) | shapefile::PolygonRing::Inner(pts) => {
-                        pts.iter().map(|p| Coord::new(p.x, p.y)).collect()
-                    }
-                };
-                let ring = Ring::new(coords);
-                if exterior.is_none() {
-                    exterior = Some(ring);
-                } else {
-                    interiors.push(ring);
-                }
-            }
-            match exterior {
-                Some(ext) => FeatureGeometry::Polygon(Polygon::new(ext, interiors)),
-                None => FeatureGeometry::Point(Point::new(0.0, 0.0)),
-            }
-        }
-        shapefile::Shape::PointM(p) => FeatureGeometry::Point(Point::new(p.x, p.y)),
-        shapefile::Shape::PointZ(p) => FeatureGeometry::Point(Point::new(p.x, p.y)),
-        _ => FeatureGeometry::Point(Point::new(0.0, 0.0)),
-    }
+    let (collection, crs) =
+        geoplumb::elements::read_shapefile(path, crs).map_err(|e| source_err(e.to_string()))?;
+    Ok(FeatureCollection::new(
+        features_with_geometry(collection),
+        Some(crs.to_string()),
+    ))
 }
 
 /// Attribute name limit of the .dbf table beside a shapefile.
@@ -569,7 +469,8 @@ fn epsg_code(crs: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geodukt_core::geometry::MultiPolygon;
+    use geodukt_core::feature::Feature;
+    use geodukt_core::geometry::{LineString, MultiPolygon, Point};
 
     fn feature(geometry: FeatureGeometry, props: &[(&str, Value)]) -> Feature {
         Feature {
@@ -601,6 +502,10 @@ mod tests {
         (dir, path)
     }
 
+    fn read_back(path: &Path) -> FeatureCollection {
+        read_shapefile(path, &Some("EPSG:4326".into())).unwrap()
+    }
+
     #[test]
     fn test_point_roundtrip_keeps_attributes() {
         let fc = FeatureCollection::new(
@@ -628,9 +533,10 @@ mod tests {
         );
 
         let (_dir, path) = write_to_temp(&fc);
-        let back = read_shapefile(&path).unwrap();
+        let back = read_shapefile(&path, &None).unwrap();
 
         assert_eq!(back.len(), 2);
+        assert_eq!(back.crs.as_deref(), Some("EPSG:4326"));
         assert!(geodukt_core::geometry::equals(
             &back.features[0].geometry,
             &point(1.0, 2.0)
@@ -641,11 +547,91 @@ mod tests {
         );
         assert_eq!(
             back.features[1].properties.get("visits"),
-            Some(&Value::Float(7.0))
+            Some(&Value::Integer(7))
         );
         assert_eq!(
             back.features[0].properties.get("area"),
             Some(&Value::Float(1.5))
+        );
+        assert_eq!(
+            back.features[1].properties.get("open"),
+            Some(&Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn test_crs_comes_from_the_prj_when_the_source_names_none() {
+        let fc = FeatureCollection::new(
+            vec![feature(point(1.0, 2.0), &[("id", Value::Integer(1))])],
+            Some("EPSG:3857".into()),
+        );
+        let (_dir, path) = write_to_temp(&fc);
+        let back = read_shapefile(&path, &None).unwrap();
+        assert_eq!(back.crs.as_deref(), Some("EPSG:3857"));
+    }
+
+    #[test]
+    fn test_source_crs_stands_in_for_a_missing_prj() {
+        let fc = FeatureCollection::new(
+            vec![feature(point(1.0, 2.0), &[("id", Value::Integer(1))])],
+            None,
+        );
+        let (_dir, path) = write_to_temp(&fc);
+        assert!(!path.with_extension("prj").exists());
+
+        let back = read_shapefile(&path, &Some("EPSG:32633".into())).unwrap();
+        assert_eq!(back.crs.as_deref(), Some("EPSG:32633"));
+        let error = read_shapefile(&path, &None).unwrap_err();
+        assert!(matches!(error, PipelineError::Source { .. }), "{error}");
+    }
+
+    #[test]
+    fn test_a_line_reads_back_with_its_exact_vertices() {
+        let coords = vec![
+            Coord::new(-0.1, 0.0),
+            Coord::new(0.3, 1.0),
+            Coord::new(0.3, 1.0),
+            Coord::new(0.7, 2.0),
+        ];
+        let line = FeatureGeometry::LineString(LineString::new(coords));
+        let fc = FeatureCollection::new(
+            vec![feature(line.clone(), &[("id", Value::Integer(1))])],
+            None,
+        );
+        let (_dir, path) = write_to_temp(&fc);
+
+        let back = read_back(&path);
+        assert_eq!(back.len(), 1);
+        assert!(
+            geodukt_core::geometry::equals(&back.features[0].geometry, &line),
+            "came back as {:?}",
+            back.features[0].geometry
+        );
+    }
+
+    #[test]
+    fn test_a_record_with_a_null_shape_is_skipped() {
+        let fc = FeatureCollection::new(
+            vec![
+                feature(point(1.0, 2.0), &[("name", Value::String("kept".into()))]),
+                feature(point(3.0, 4.0), &[("name", Value::String("null".into()))]),
+            ],
+            None,
+        );
+        let (_dir, path) = write_to_temp(&fc);
+        // .shx index entries hold the record's offset in 16-bit words and its length, both big endian
+        let shx = std::fs::read(path.with_extension("shx")).unwrap();
+        let second_record = 2 * i32::from_be_bytes(shx[108..112].try_into().unwrap()) as usize;
+        let mut shp = std::fs::read(&path).unwrap();
+        // .shp records carry their shape type after an 8-byte header, and type 0 is the null shape
+        shp[second_record + 8..second_record + 12].copy_from_slice(&0i32.to_le_bytes());
+        std::fs::write(&path, shp).unwrap();
+
+        let back = read_back(&path);
+        assert_eq!(back.len(), 1);
+        assert_eq!(
+            back.features[0].properties.get("name"),
+            Some(&Value::String("kept".into()))
         );
     }
 
@@ -679,7 +665,7 @@ mod tests {
         let fc =
             FeatureCollection::new(vec![feature(square(), &[("id", Value::Integer(1))])], None);
         let (_dir, path) = write_to_temp(&fc);
-        let back = read_shapefile(&path).unwrap();
+        let back = read_back(&path);
         assert_eq!(back.len(), 1);
         assert!(matches!(
             back.features[0].geometry,
@@ -701,7 +687,7 @@ mod tests {
             None,
         );
         let (_dir, path) = write_to_temp(&fc);
-        assert_eq!(read_shapefile(&path).unwrap().len(), 2);
+        assert_eq!(read_back(&path).len(), 2);
     }
 
     #[test]
@@ -800,7 +786,7 @@ mod tests {
             None,
         );
         let (_dir, path) = write_to_temp(&fc);
-        let back = read_shapefile(&path).unwrap();
+        let back = read_back(&path);
         assert_eq!(back.len(), 2);
         assert_eq!(back.features[1].properties.get("name"), Some(&Value::Null));
     }
@@ -817,7 +803,7 @@ mod tests {
             None,
         );
         let (_dir, path) = write_to_temp(&fc);
-        let back = read_shapefile(&path).unwrap();
+        let back = read_back(&path);
         assert_eq!(
             back.features[0].properties.get("n"),
             Some(&Value::Float(123456789012345.0))
@@ -838,7 +824,7 @@ mod tests {
             None,
         );
         let (_dir, path) = write_to_temp(&fc);
-        let back = read_shapefile(&path).unwrap();
+        let back = read_back(&path);
         assert_eq!(
             back.features[0].properties.get("mixed"),
             Some(&Value::String("true".into()))
@@ -849,52 +835,44 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_read_names_the_missing_dbf() {
-        let fc = FeatureCollection::new(
-            vec![feature(point(0.0, 0.0), &[("id", Value::Integer(1))])],
-            None,
-        );
-        let (_dir, path) = write_to_temp(&fc);
-        std::fs::remove_file(path.with_extension("dbf")).unwrap();
-
-        let error = read_shapefile(&path).unwrap_err();
-        assert!(matches!(error, PipelineError::Source { .. }), "{error}");
-        assert!(error.to_string().contains("out.dbf is missing"), "{error}");
-    }
-
     #[cfg(unix)]
     #[test]
     fn test_read_refuses_a_symlinked_sidecar_with_or_without_a_target() {
         let fc = FeatureCollection::new(
             vec![feature(point(0.0, 0.0), &[("id", Value::Integer(1))])],
-            None,
+            Some("EPSG:4326".into()),
         );
-        let (dir, path) = write_to_temp(&fc);
-        let dbf = path.with_extension("dbf");
-        let moved_dbf = dir.path().join("moved.dbf");
-        std::fs::rename(&dbf, &moved_dbf).unwrap();
+        for extension in ["shx", "dbf", "prj", "cpg"] {
+            let (dir, path) = write_to_temp(&fc);
+            let sidecar = path.with_extension(extension);
+            let moved = dir.path().join(format!("moved.{extension}"));
+            std::fs::write(&moved, "UTF-8").unwrap();
+            if sidecar.exists() {
+                std::fs::rename(&sidecar, &moved).unwrap();
+            }
 
-        for target in [moved_dbf, dir.path().join("absent.dbf")] {
-            std::os::unix::fs::symlink(&target, &dbf).unwrap();
-            let error = read_shapefile(&path).unwrap_err();
-            assert!(
-                error.to_string().contains("without following symlinks"),
-                "{}: {error}",
-                target.display()
-            );
-            std::fs::remove_file(&dbf).unwrap();
+            for target in [moved, dir.path().join(format!("absent.{extension}"))] {
+                std::os::unix::fs::symlink(&target, &sidecar).unwrap();
+                let error = read_shapefile(&path, &None).unwrap_err();
+                assert!(
+                    error.to_string().contains("without following symlinks"),
+                    "{}: {error}",
+                    target.display()
+                );
+                std::fs::remove_file(&sidecar).unwrap();
+            }
         }
     }
 
+    #[cfg(unix)]
     #[test]
-    fn test_uppercase_shp_reads_uppercase_sidecars() {
+    fn test_read_refuses_a_symlinked_uppercase_sidecar() {
         let fc = FeatureCollection::new(
             vec![feature(point(1.0, 2.0), &[("id", Value::Integer(1))])],
-            None,
+            Some("EPSG:4326".into()),
         );
         let (dir, path) = write_to_temp(&fc);
-        for extension in ["shp", "shx", "dbf"] {
+        for extension in ["shp", "shx", "dbf", "prj"] {
             std::fs::rename(
                 path.with_extension(extension),
                 dir.path()
@@ -902,9 +880,16 @@ mod tests {
             )
             .unwrap();
         }
+        let shp = dir.path().join("OUT.SHP");
+        let moved = dir.path().join("moved.dbf");
+        std::fs::rename(shp.with_extension("DBF"), &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, shp.with_extension("DBF")).unwrap();
 
-        let back = read_shapefile(&dir.path().join("OUT.SHP")).unwrap();
-        assert_eq!(back.len(), 1);
+        let error = read_shapefile(&shp, &None).unwrap_err();
+        assert!(
+            error.to_string().contains("without following symlinks"),
+            "{error}"
+        );
     }
 
     #[test]
