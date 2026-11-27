@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them with `execute_batch`, so a manifest could run any SQL, `ATTACH` included.
 
 ### Fixed
+- 2026-11-27: the run history file uses `synchronous = NORMAL`. Under the
+  default every commit synced the WAL to disk, and on a slow disk writers from
+  several processes queued past the 5 s busy timeout and failed with "database
+  is locked". A run recorded just before a power loss or OS crash can now be
+  lost, a server crash loses none.
 - 2026-11-03: the GeoPackage writer drops a property key matching `fid` or
   `geom` in any case. `Fid` or `GEOM` failed at `CREATE TABLE` with a duplicate
   column error. The reader also skips the primary key and geometry columns when

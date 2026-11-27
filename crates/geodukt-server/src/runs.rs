@@ -89,6 +89,8 @@ impl RunStore {
                 // not block the writer and a writer must wait its turn rather
                 // than fail on the spot
                 connection.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+                // sqlite fsyncs the wal on every commit under the default synchronous = FULL
+                connection.execute("PRAGMA synchronous = NORMAL", [])?;
                 connection.busy_timeout(BUSY_TIMEOUT)?;
                 connection
             }

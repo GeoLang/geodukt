@@ -357,7 +357,9 @@ directories the same way.
 one, both in the shape `POST /run` returns. Neither takes a parameter.
 
 `GEODUKT_RUNS_DB` names the sqlite file, which is created if missing. The server
-needs write access to the file and its directory.
+needs write access to the file and its directory. Commits are not synced to disk
+one by one (`synchronous = NORMAL`), so a run recorded just before a power loss
+or OS crash can be missing afterwards. A crash of the server itself loses none.
 
 ### /gp tools
 
